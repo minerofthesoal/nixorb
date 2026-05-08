@@ -1,0 +1,54 @@
+# pyproject.toml
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "nixorb"
+version = "0.1.0"
+description = "Floating AI assistant orb for Arch Linux / KDE Plasma 6 Wayland"
+requires-python = ">=3.12"
+readme = "README.md"
+license = { file = "LICENSE" }
+
+dependencies = [
+    "PySide6>=6.7",
+    "qasync>=0.27",
+    "faster-whisper>=1.0",
+    "torch>=2.7",
+    "hypernix",
+    "chromadb>=0.5",
+    "llama-cpp-python>=0.2",
+    "openai>=1.30",
+    "typer[all]>=0.12",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "sounddevice>=0.4",
+    "soundfile>=0.12",
+    "numpy>=1.26",
+    "pygments>=2.18",
+    "cryptography>=42",
+    "tomli-w>=1.0",
+    "aiofiles>=23",
+    "openwakeword>=0.6",
+    "huggingface-hub>=0.23",
+]
+
+[project.scripts]
+nixorb = "nixorb.cli:app"
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "ruff", "mypy"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["nixorb*"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.mypy]
+python_version = "3.12"
+strict = false
+ignore_missing_imports = true
