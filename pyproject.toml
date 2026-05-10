@@ -1,0 +1,87 @@
+[build-system]
+# Switch to hatchling — zero native deps, always supports editable installs,
+# no setuptools-scm version-from-git requirement that breaks without a tag.
+requires      = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name        = "nixorb"
+version     = "0.1.0"
+description = "Floating AI assistant orb for Arch Linux — KDE Plasma 6 Wayland"
+readme      = "README.md"
+license     = { text = "MIT" }
+requires-python = ">=3.12"
+authors     = [{ name = "NixOrb Contributors" }]
+keywords    = ["ai", "assistant", "wayland", "kde", "llm", "tts", "asr"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Desktop Environment",
+    "License :: OSI Approved :: MIT License",
+]
+
+dependencies = [
+    "PySide6>=6.7.0",
+    "qasync>=0.27.1",
+    "faster-whisper>=1.0.3",
+    "openai>=1.35.0",
+    "huggingface-hub>=0.23.0",
+    "chromadb>=0.5.3",
+    "aiohttp>=3.9.5",
+    "sounddevice>=0.4.7",
+    "soundfile>=0.12.1",
+    "numpy>=1.26.0",
+    "pydantic>=2.7.0",
+    "pydantic-settings>=2.3.0",
+    "tomli-w>=1.0.0",
+    "typer[all]>=0.12.3",
+    "cryptography>=42.0.0",
+    "pygments>=2.18.0",
+    "aiofiles>=23.2.1",
+    "pynput>=1.7.6",
+    "hypernix",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+local-llm = ["llama-cpp-python>=0.2.82"]
+wake-word = ["openwakeword>=0.6.0"]
+
+[project.scripts]
+nixorb = "nixorb.cli:app"
+
+[project.gui-scripts]
+nixorb-gui = "nixorb.main:main"
+
+[project.urls]
+Homepage   = "https://github.com/nixorb/nixorb"
+Repository = "https://github.com/nixorb/nixorb"
+Issues     = "https://github.com/nixorb/nixorb/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["nixorb"]
+
+[tool.hatch.build.targets.wheel.shared-data]
+"assets"            = "share/nixorb/assets"
+"config"            = "share/nixorb/config"
+"packaging/nixorb.desktop" = "share/applications/nixorb.desktop"
+
+[tool.ruff]
+target-version = "py312"
+line-length    = 100
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = ["E501", "B008"]
+
+[tool.mypy]
+python_version         = "3.12"
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths    = ["tests"]

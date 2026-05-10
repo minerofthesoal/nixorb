@@ -1,0 +1,263 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write   # needed to create GitHub Release and upload assets
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  # ────────────────────────────────────────────────────────────────── #
+  #  Extract version from tag                                          #
+  # ────────────────────────────────────────────────────────────────── #
+  meta:
+    name: Extract version
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+  # ────────────────────────────────────────────────────────────────── #
+  #  Python wheel (PyPI-ready)                                         #
+  # ────────────────────────────────────────────────────────────────── #
+  build-wheel:
+    name: Build Python Wheel
+    runs-on: ubuntu-22.04
+    needs: meta
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install build tools
+        run: pip install build
+
+      - name: Build wheel + sdist
+        run: python -m build
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-dist
+          path: dist/
+
+  # ────────────────────────────────────────────────────────────────── #
+  #  Publish to PyPI (on release tag)                                  #
+  # ────────────────────────────────────────────────────────────────── #
+  publish-pypi:
+    name: Publish to PyPI
+    runs-on: ubuntu-22.04
+    needs: build-wheel
+    environment:
+      name: pypi
+      url: https://pypi.org/p/nixorb
+    permissions:
+      id-token: write   # OIDC trusted publisher
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  # ────────────────────────────────────────────────────────────────── #
+  #  Arch Linux pacman package                                         #
+  # ────────────────────────────────────────────────────────────────── #
+  build-pacman:
+    name: Build pacman package
+    runs-on: ubuntu-22.04
+    needs: meta
+    container:
+      image: archlinux:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install makepkg dependencies
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm base-devel python python-pip git \
+            qt6-base qt6-declarative qt6-tools \
+            cuda || true   # cuda may fail in container; continue
+
+      - name: Patch PKGBUILD version + source
+        run: |
+          VERSION="${{ needs.meta.outputs.version }}"
+          cd packaging
+          # Point source to local checkout for container build
+          sed -i "s|^pkgver=.*|pkgver=${VERSION}|" PKGBUILD
+          sed -i "s|^source=.*|source=()|"         PKGBUILD
+          sed -i "s|^sha256sums=.*|sha256sums=()|" PKGBUILD
+
+      - name: Build package (as non-root user)
+        run: |
+          useradd -m builder
+          cp -r . /home/builder/nixorb
+          chown -R builder:builder /home/builder/nixorb
+          cd /home/builder/nixorb/packaging
+          su builder -c "makepkg --noconfirm --skipinteg -d"
+
+      - name: Upload pacman artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pacman-pkg
+          path: /home/builder/nixorb/packaging/*.pkg.tar.*
+
+  # ────────────────────────────────────────────────────────────────── #
+  #  AppImage                                                          #
+  # ────────────────────────────────────────────────────────────────── #
+  build-appimage:
+    name: Build AppImage
+    runs-on: ubuntu-22.04
+    needs: meta
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libportaudio2 portaudio19-dev ffmpeg \
+            libfuse2 squashfs-tools \
+            qt6-base-dev qt6-declarative-dev qt6-tools-dev \
+            python3-dev
+
+      - name: Install appimage-builder + nixorb
+        run: |
+          pip install torch==2.7.1+cpu --index-url https://download.pytorch.org/whl/cpu
+          pip install appimage-builder
+          pip install -e .
+
+      - name: Build AppImage
+        run: |
+          export NIXORB_VERSION="${{ needs.meta.outputs.version }}"
+          cd packaging/appimage
+          bash build_appimage.sh "$NIXORB_VERSION"
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: appimage
+          path: packaging/appimage/NixOrb-*.AppImage
+
+  # ────────────────────────────────────────────────────────────────── #
+  #  Flatpak bundle                                                    #
+  # ────────────────────────────────────────────────────────────────── #
+  build-flatpak:
+    name: Build Flatpak
+    runs-on: ubuntu-22.04
+    needs: meta
+    container:
+      image: bilelmoussaoui/flatpak-github-actions:kde-6.7
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pre-download Python wheels
+        run: |
+          mkdir -p wheels
+          pip download -d wheels \
+            faster-whisper openai chromadb aiohttp qasync \
+            pydantic pydantic-settings tomli-w typer rich pygments \
+            openwakeword huggingface-hub cryptography aiofiles \
+            sounddevice soundfile numpy pynput hypernix
+
+      - name: Build Flatpak
+        uses: bilelmoussaoui/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle:    NixOrb-${{ needs.meta.outputs.version }}.flatpak
+          manifest-path: packaging/io.nixorb.NixOrb.yml
+          cache-key: flatpak-builder-${{ github.sha }}
+
+      - name: Upload Flatpak artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flatpak
+          path: NixOrb-*.flatpak
+
+  # ────────────────────────────────────────────────────────────────── #
+  #  GitHub Release                                                    #
+  # ────────────────────────────────────────────────────────────────── #
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-22.04
+    needs: [meta, build-wheel, build-pacman, build-appimage, build-flatpak]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets/
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          PREV=$(git tag --sort=-version:refname | sed -n '2p')
+          if [ -n "$PREV" ]; then
+            LOG=$(git log "${PREV}..HEAD" --oneline --no-merges | head -40)
+          else
+            LOG=$(git log --oneline --no-merges | head -40)
+          fi
+          echo "changelog<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$LOG"           >> "$GITHUB_OUTPUT"
+          echo "EOF"            >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: NixOrb ${{ needs.meta.outputs.version }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          body: |
+            ## NixOrb ${{ needs.meta.outputs.version }}
+
+            ### Installation
+
+            **Arch Linux (pacman)**
+            ```bash
+            # Download nixorb-*.pkg.tar.zst from assets below
+            sudo pacman -U nixorb-${{ needs.meta.outputs.version }}-1-x86_64.pkg.tar.zst
+            ```
+
+            **PyPI (pip)**
+            ```bash
+            pip install nixorb==${{ needs.meta.outputs.version }}
+            ```
+
+            **AppImage (portable)**
+            ```bash
+            chmod +x NixOrb-${{ needs.meta.outputs.version }}-x86_64.AppImage
+            ./NixOrb-${{ needs.meta.outputs.version }}-x86_64.AppImage
+            ```
+
+            **Flatpak**
+            ```bash
+            flatpak install NixOrb-${{ needs.meta.outputs.version }}.flatpak
+            flatpak run io.nixorb.NixOrb
+            ```
+
+            ### Changes
+            ${{ steps.changelog.outputs.changelog }}
+          files: |
+            release-assets/python-dist/*
+            release-assets/pacman-pkg/*
+            release-assets/appimage/*
+            release-assets/flatpak/*
