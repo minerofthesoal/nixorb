@@ -1,0 +1,54 @@
+app-id: io.nixorb.NixOrb
+runtime: org.kde.Platform
+runtime-version: '6.8'
+sdk: org.kde.Sdk
+# Note: CUDA extension removed - not available on flathub.
+# GPU acceleration via system CUDA when running natively.
+command: nixorb
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --socket=pulseaudio
+  - --share=network
+  - --filesystem=home
+  - --socket=session-bus
+  - --talk-name=org.kde.kglobalaccel
+  - --talk-name=org.kde.kdeconnect
+  - --talk-name=org.kde.StatusNotifierWatcher
+
+modules:
+  - name: portaudio
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+    sources:
+      - type: archive
+        url: https://github.com/PortAudio/portaudio/archive/refs/tags/v19.7.0.tar.gz
+        sha256: 5af29ba58bbdbb7bbcefaaecc77728d321279892e2d1b6c6e1e45e8f0c9e98fc
+
+  - name: python-deps
+    buildsystem: simple
+    build-commands:
+      - pip3 install --prefix=/app --no-index --find-links=wheels/
+          faster-whisper openai chromadb aiohttp qasync pydantic
+          pydantic-settings tomli-w typer rich pygments openwakeword
+          huggingface-hub cryptography aiofiles sounddevice soundfile
+          numpy pynput hypernix
+    sources:
+      - type: dir
+        path: wheels
+
+  - name: nixorb
+    buildsystem: simple
+    build-commands:
+      - pip3 install --prefix=/app --no-build-isolation .
+      - install -Dm644 packaging/nixorb.desktop /app/share/applications/io.nixorb.NixOrb.desktop
+      - install -Dm644 assets/icons/nixorb_256.png /app/share/icons/hicolor/256x256/apps/io.nixorb.NixOrb.png
+      - install -Dm644 assets/nixorb.svg /app/share/icons/hicolor/scalable/apps/io.nixorb.NixOrb.svg
+      - mkdir -p /app/share/nixorb
+      - cp -r assets /app/share/nixorb/
+      - cp -r config /app/share/nixorb/
+    sources:
+      - type: dir
+        path: ..

@@ -1,0 +1,66 @@
+# NixOrb default configuration
+# Copied to ~/.config/nixorb/config.toml on first run.
+# Edit with: nixorb config key value   OR   nixorb config-gui
+
+# ── Orb UI ────────────────────────────────────────────────────────── #
+hotkey   = "Ctrl+Alt+Space"
+orb_size = 120
+
+# ── ASR ───────────────────────────────────────────────────────────── #
+asr_model    = "large-v3"       # Whisper Large v3 (INT8, ~2 GB VRAM)
+asr_language = ""               # empty = auto-detect
+
+# ── LLM ───────────────────────────────────────────────────────────── #
+llm_backend      = "huggingface"
+llm_model        = "torphix/stablelm-2-glados-v1"     # GLaDOS personality local model
+llm_fast_model   = "google/gemma-4-31B-it-assistant"   # 0.5B fast assistant
+llm_base_url     = "https://api.openai.com/v1"
+openai_api_key   = ""
+hf_token         = ""
+local_model_path = ""           # path to .gguf for local llama.cpp backend
+llm_vram_mb      = 4096
+llm_max_new_tokens = 512
+
+# ── TTS ───────────────────────────────────────────────────────────── #
+tts_backend = "huggingface"
+tts_hf_repo = "torphix/stablelm-2-glados-v1"  # GLaDOS voice
+tts_voice   = "alloy"           # used for OpenAI TTS backend
+
+# ── Vision ────────────────────────────────────────────────────────── #
+vision_enabled = true
+vision_model   = "thwri/CogFlorence-2.2-Large"  # lightweight screen captioner
+vlm_model      = "Qwen/Qwen3.5-4B"              # full vision+language model
+use_vlm        = false           # true = use Qwen VLM; false = CogFlorence
+
+# ── Web search ────────────────────────────────────────────────────── #
+web_search_enabled     = true
+web_search_max_results = 4
+
+# ── Features ──────────────────────────────────────────────────────── #
+wake_word_enabled             = false
+wake_word_model               = "hey_jarvis_v0.1"
+screen_capture_enabled        = true
+offline_fallback_enabled      = true
+require_action_confirmation   = true
+clipboard_enabled             = true
+
+# ── Notes ─────────────────────────────────────────────────────────── #
+# Set your HuggingFace token for gated models:
+#   nixorb config hf_token hf_xxxxx
+#
+# Switch to OpenAI backend:
+#   nixorb config llm_backend openai
+#   nixorb config openai_api_key sk-xxxxx
+#   nixorb config llm_model gpt-4o-mini
+#
+# Use a local GGUF model:
+#   nixorb config llm_backend local
+#   nixorb config local_model_path /path/to/model.gguf
+#
+# Compile QML shaders (required once after install):
+#   /usr/lib/qt6/bin/qsb --glsl "100es,120,150" --hlsl 50 --msl 12 \
+#     /usr/share/nixorb/assets/shaders/orb_glow.vert \
+#     -o /usr/share/nixorb/assets/shaders/orb_glow.vert.qsb
+#   /usr/lib/qt6/bin/qsb --glsl "100es,120,150" --hlsl 50 --msl 12 \
+#     /usr/share/nixorb/assets/shaders/orb_glow.frag \
+#     -o /usr/share/nixorb/assets/shaders/orb_glow.frag.qsb
