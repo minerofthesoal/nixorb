@@ -13,17 +13,22 @@ Item {
     height: 120
     layer.enabled: true
 
-    ShaderEffect {
-        id: glowShader
-        anchors.fill: parent
-        property real  time:      0.0
-        property real  amplitude: root.amplitude
-        property color baseColor: Qt.color(root.orbColor)
-        NumberAnimation on time { from:0; to:6.28318; duration:4000; loops:Animation.Infinite; running:true }
-        Behavior on baseColor { ColorAnimation { duration: 350 } }
-        vertexShader:   Qt.resolvedUrl("shaders/orb_glow.vert.qsb")
-        fragmentShader: Qt.resolvedUrl("shaders/orb_glow.frag.qsb")
-        blending: true
+    Rectangle {
+        id: glowBackdrop
+        anchors.centerIn: parent
+        width: 112 + root.amplitude * 8
+        height: width
+        radius: width / 2
+        color: root.orbColor
+        opacity: 0.18 + root.amplitude * 0.16
+        scale: 1.0
+        Behavior on color { ColorAnimation { duration: 350 } }
+        Behavior on opacity { SmoothedAnimation { velocity: 3 } }
+        SequentialAnimation on scale {
+            loops: Animation.Infinite
+            NumberAnimation { to: 1.08; duration: 1700; easing.type: Easing.InOutSine }
+            NumberAnimation { to: 1.0; duration: 1700; easing.type: Easing.InOutSine }
+        }
     }
 
     Rectangle {

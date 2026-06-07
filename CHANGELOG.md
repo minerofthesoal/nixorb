@@ -1,3 +1,13 @@
+## [0.01.0.05] — 2026-06-07
+
+### Fixed
+- Installed wheel asset lookup now resolves `share/nixorb/assets` so `nixorb start` can load the orb QML and tray icon outside a source checkout.
+- Replaced shader-only orb backdrop with a pure-QML fallback so missing `.qsb` files no longer prevent the app from appearing.
+- Startup now shows the tray/orb before heavyweight dependency and model initialization, then preloads the ASR model in the background.
+- Whisper ASR now honors the configured model, falls back from CUDA to CPU, emits microphone level activity, and waits for initial speech instead of timing out after startup silence.
+- Chroma memory now uses a local deterministic embedding function to avoid first-run network downloads in tests/offline installs.
+- Added missing HuggingFace runtime dependencies and CPU fallback for HuggingFace TTS.
+
 ## [0.01.0.04] — 2026-05-12
 
 ### Fixed

@@ -51,6 +51,7 @@ class Event(Enum):
     SHUTDOWN            = auto()
     LOG                 = auto()
     MIC_MUTED           = auto()
+    MIC_LEVEL           = auto()
 
 
 @dataclass

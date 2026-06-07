@@ -24,7 +24,7 @@ def _load_hf_tts(repo_id: str, token: str | None) -> Any:
         task,
         model=repo_id,
         token=token or None,
-        device=0,            # CUDA device 0
+        device=0 if torch.cuda.is_available() else -1,
     )
 
 
