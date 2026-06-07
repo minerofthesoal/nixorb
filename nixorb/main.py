@@ -110,6 +110,19 @@ async def _async_main(settings, app) -> None:
     await bus.start()
     log.info("NixOrb %s starting", settings.__class__.__module__)
 
+    # Show Qt surfaces before dependency/model initialisation so packaged
+    # launches never look hung while models are being cached.
+    from nixorb.ui.settings_window import SettingsWindow
+    SettingsWindow.init_settings(settings)
+
+    from nixorb.ui.tray_icon import NixOrbTray
+    tray = NixOrbTray(settings, app)
+    tray.show()
+
+    from nixorb.ui.orb_window import OrbWindow
+    orb = OrbWindow(settings, app)
+    orb.show()
+
     await vram.start_monitor(poll_interval=6.0)
 
     for pkg in check_dependencies():
@@ -142,17 +155,15 @@ async def _async_main(settings, app) -> None:
     names = plugin_loader.plugin_names()
     log.info("Plugins loaded: %s", ", ".join(names) if names else "none")
 
-    # ── Qt windows (bus._loop set → emit_sync safe) ───────────────── #
-    from nixorb.ui.settings_window import SettingsWindow
-    SettingsWindow.init_settings(settings)
+    async def _preload_asr() -> None:
+        try:
+            await asr.preload()
+            await bus.emit(Event.LOG, data={"level": "info", "msg": "✅ ASR model ready"}, source="startup")
+        except Exception as exc:
+            log.warning("ASR model preload failed: %s", exc)
+            await bus.emit(Event.LOG, data={"level": "warning", "msg": f"⚠ ASR preload failed: {exc}"}, source="startup")
 
-    from nixorb.ui.tray_icon import NixOrbTray
-    tray = NixOrbTray(settings, app)
-    tray.show()
-
-    from nixorb.ui.orb_window import OrbWindow
-    orb = OrbWindow(settings, app)
-    orb.show()
+    asyncio.create_task(_preload_asr(), name="nixorb-asr-preload")
 
     # ── Hotkey (after bus._loop confirmed set) ────────────────────── #
     from nixorb.ui.hotkey import HotkeyManager
@@ -356,9 +367,10 @@ def main() -> None:
         datefmt="%H:%M:%S",
     )
 
-    app = QApplication(sys.argv)
+    app = QApplication.instance() or QApplication(sys.argv)
+    from nixorb import __version__
     app.setApplicationName("NixOrb")
-    app.setApplicationVersion("0.01.0.01")
+    app.setApplicationVersion(__version__)
     app.setOrganizationName("NixOrb")
     cast(Any, app).setQuitOnLastWindowClosed(False)
 

@@ -66,6 +66,7 @@ class VectorMemory:
         path = Path(memory_dir)
         path.mkdir(parents=True, exist_ok=True)
         self._client = chromadb.PersistentClient(path=str(path))
+        self._embedding = _LocalHashEmbedding()
         self._col    = self._client.get_or_create_collection(
             name="nixorb_memory",
             metadata={"hnsw:space": "cosine"},

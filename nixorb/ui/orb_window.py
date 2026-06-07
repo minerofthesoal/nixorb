@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 from PySide6.QtCore import (
     Property,
@@ -21,10 +20,11 @@ from PySide6.QtQuick import QQuickView
 from PySide6.QtWidgets import QApplication
 
 from nixorb.core.event_bus import Event, EventPayload, bus
+from nixorb.utils.paths import asset_path
 
 log = logging.getLogger(__name__)
 
-_QML_PATH = Path(__file__).parents[2] / "assets" / "orb.qml"
+_QML_PATH = asset_path("orb.qml")
 
 QML_IMPORT_NAME    = "NixOrb"
 QML_IMPORT_VERSION = "1.0"
@@ -125,13 +125,15 @@ class OrbWindow(QQuickView):
         if self.status() == QQuickView.Status.Error:
             for err in self.errors():
                 log.error("QML error: %s", err.toString())
-            log.warning("Orb QML failed to load — check shader .qsb files")
+            log.warning("Orb QML failed to load from %s", _QML_PATH)
 
     def _subscribe(self) -> None:
         for evt in (Event.ORB_IDLE, Event.ORB_LISTENING,
                     Event.ORB_THINKING, Event.ORB_SPEAKING, Event.ORB_ERROR):
             bus.subscribe(evt, self._on_orb_state)
         bus.subscribe(Event.TTS_AUDIO_CHUNK, self._on_audio_chunk)
+        bus.subscribe(Event.MIC_LEVEL, self._on_mic_level)
+        bus.subscribe(Event.RECORDING_STOP, self._on_recording_stop)
 
     _EVENT_STATE: dict[Event, str] = {
         Event.ORB_IDLE:      "idle",
@@ -152,6 +154,13 @@ class OrbWindow(QQuickView):
         if pcm:
             arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
             self._target_amp = float(np.sqrt(np.mean(arr ** 2)) / 32_768.0)
+
+    async def _on_mic_level(self, payload: EventPayload) -> None:
+        data = payload.data or {}
+        self._target_amp = float(data.get("level", 0.0))
+
+    async def _on_recording_stop(self, _payload: EventPayload) -> None:
+        self._target_amp = 0.0
 
     def _start_amp_smoother(self) -> None:
         self._amp_timer = QTimer(self)
