@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import sounddevice as sd
@@ -34,15 +34,16 @@ class GladosTTS:
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        self._pipeline = None
+        self._pipeline: tuple[str, Any] | None = None
         self._loaded   = False
 
-    def _load(self):
+    def _load(self) -> tuple[str, Any]:
         try:
             from transformers import pipeline as hf_pipeline
             # Try TTS pipeline directly
+            task: Any = "text-to-speech"
             pipe = hf_pipeline(
-                "text-to-speech",
+                task,
                 model=self._settings.tts_hf_repo,
                 token=self._settings.hf_token or None,
                 device=0 if _has_cuda() else -1,
@@ -77,7 +78,7 @@ class GladosTTS:
             return None
         kind, pipe = self._pipeline
         if kind == "pipeline":
-            out = pipe(text)
+            out = cast(Any, pipe)(text)
             arr = np.array(out["audio"], dtype=np.float32)
             if arr.ndim > 1:
                 arr = arr[0]
@@ -96,26 +97,26 @@ def _has_cuda() -> bool:
         return False
 
 
-def _load_speecht5(token: str):
+def _load_speecht5(token: str | None) -> tuple[str, Any]:
     import torch
     from datasets import load_dataset
     from transformers import SpeechT5ForTextToSpeech, SpeechT5HifiGan, SpeechT5Processor
 
     device = "cuda" if _has_cuda() else "cpu"
     proc  = SpeechT5Processor.from_pretrained("microsoft/speecht5_tts", token=token or None)
-    model = SpeechT5ForTextToSpeech.from_pretrained(
+    model = cast(Any, SpeechT5ForTextToSpeech.from_pretrained(
         "microsoft/speecht5_tts", token=token or None
-    ).to(device)
-    voc   = SpeechT5HifiGan.from_pretrained(
+    )).to(device)
+    voc   = cast(Any, SpeechT5HifiGan.from_pretrained(
         "microsoft/speecht5_hifigan", token=token or None
-    ).to(device)
+    )).to(device)
     embs  = load_dataset("Matthijs/cmu-arctic-xvectors", split="validation")
     # speaker 7306 = neutral/robotic sounding
     spk   = torch.tensor(embs[7306]["xvector"]).unsqueeze(0).to(device)
     return ("speecht5", (proc, model, voc, spk))
 
 
-def _synthesise_speecht5(pipe, text: str) -> bytes | None:
+def _synthesise_speecht5(pipe: Any, text: str) -> bytes | None:
     import torch
     proc, model, voc, spk = pipe
     inputs = proc(text=text, return_tensors="pt").to(spk.device)
