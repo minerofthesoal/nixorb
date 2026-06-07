@@ -5,40 +5,52 @@ import hashlib
 import logging
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 log = logging.getLogger(__name__)
 
 
 class _LocalHashEmbedding:
-    """Small deterministic embedding function that never downloads models."""
+    """Deterministic local embedding function that avoids Chroma's model download."""
 
-    def __init__(self, dimensions: int = 384) -> None:
-        self._dimensions = dimensions
+    _DIMENSIONS = 64
 
-    def name(self) -> str:
-        return "nixorb-local-hash"
+    @staticmethod
+    def name() -> str:
+        return "default"
 
-    def embed_documents(self, input):
+    @staticmethod
+    def build_from_config(config: dict[str, Any]) -> _LocalHashEmbedding:
+        return _LocalHashEmbedding()
+
+    def get_config(self) -> dict[str, Any]:
+        return {}
+
+    def is_legacy(self) -> bool:
+        return False
+
+    def default_space(self) -> str:
+        return "cosine"
+
+    def supported_spaces(self) -> list[str]:
+        return ["cosine"]
+
+    def embed_query(self, input: list[str]) -> list[list[float]]:
         return self(input)
 
-    def embed_query(self, input):
-        return self(input)
-
-    def __call__(self, input):  # ChromaDB's EmbeddingFunction protocol uses this name
-        import math
-        import re
-
-        vectors = []
-        for doc in input:
-            vec = [0.0] * self._dimensions
-            for token in re.findall(r"[\w']+", str(doc).lower()):
-                digest = hashlib.blake2b(token.encode(), digest_size=8).digest()
-                idx = int.from_bytes(digest[:4], "little") % self._dimensions
-                sign = 1.0 if digest[4] & 1 else -1.0
-                vec[idx] += sign
-            norm = math.sqrt(sum(v * v for v in vec)) or 1.0
-            vectors.append([v / norm for v in vec])
+    def __call__(self, input: list[str]) -> list[list[float]]:
+        vectors: list[list[float]] = []
+        for text in input:
+            vector = [0.0] * self._DIMENSIONS
+            for token in text.lower().split():
+                digest = hashlib.sha256(token.encode()).digest()
+                index = int.from_bytes(digest[:2], "big") % self._DIMENSIONS
+                sign = 1.0 if digest[2] % 2 == 0 else -1.0
+                vector[index] += sign
+            norm = sum(value * value for value in vector) ** 0.5
+            if norm:
+                vector = [value / norm for value in vector]
+            vectors.append(vector)
         return vectors
 
 
@@ -58,7 +70,7 @@ class VectorMemory:
         self._col    = self._client.get_or_create_collection(
             name="nixorb_memory",
             metadata={"hnsw:space": "cosine"},
-            embedding_function=self._embedding,
+            embedding_function=cast(Any, _LocalHashEmbedding()),
         )
         log.info("VectorMemory ready (%d entries in %s)", self._col.count(), path)
 
