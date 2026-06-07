@@ -136,13 +136,13 @@ def ask(
     async def _run() -> None:
         from nixorb.core.event_bus import bus
         from nixorb.core.vram_manager import vram
-        from nixorb.llm.backends import HuggingFaceBackend, OllamaBackend, OpenAIBackend
+        from nixorb.llm.backends import HuggingFaceBackend, LLMBackend, OllamaBackend, OpenAIBackend
 
         await bus.start()
         await vram.start_monitor()
         b = settings.llm_backend.lower()
         if b == "openai":
-            llm = OpenAIBackend(settings.openai_api_key, settings.llm_model, settings.llm_base_url)
+            llm: LLMBackend = OpenAIBackend(settings.openai_api_key, settings.llm_model, settings.llm_base_url)
         elif b == "ollama":
             llm = OllamaBackend(settings.llm_model)
         else:
@@ -408,8 +408,8 @@ def import_config(
 @app.command()
 def version() -> None:
     """Show version and runtime info."""
-    from nixorb import __version__
-    console.print(f"[bold]NixOrb[/bold] {__version__}")
+    import nixorb
+    console.print(f"[bold]NixOrb[/bold] {getattr(nixorb, '__version__', 'unknown')}")
     try:
         import torch
         cuda = "[green]yes[/green]" if torch.cuda.is_available() else "[red]no[/red]"
@@ -421,7 +421,7 @@ def version() -> None:
         console.print("  [yellow]PyTorch not installed[/yellow]")
     try:
         import PySide6.QtCore as qc
-        console.print(f"  Qt {qc.__version__}")
+        console.print(f"  Qt {getattr(qc, '__version__', 'unknown')}")
     except ImportError:
         console.print("  [yellow]PySide6 not installed[/yellow]")
 
