@@ -7,7 +7,7 @@ import logging
 import shutil
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from nixorb.llm.backends import LLMBackend
@@ -93,7 +93,7 @@ class ScreenCapture:
             model.eval()
             inputs = processor(images=img, text="<DETAILED_CAPTION>", return_tensors="pt")
             with torch.no_grad():
-                ids = model.generate(**inputs, max_new_tokens=256, do_sample=False)
+                ids = cast(Any, model).generate(**inputs, max_new_tokens=256, do_sample=False)
             return processor.decode(ids[0], skip_special_tokens=True).strip()
         except Exception as exc:
             log.error("CogFlorence failed: %s", exc)

@@ -46,7 +46,8 @@ class VectorMemory:
             query_texts=[text],
             n_results=min(n_results, count),
         )
-        return results.get("documents", [[]])[0]
+        documents = results.get("documents") or [[]]
+        return documents[0]
 
     def build_context_block(self, query: str, n: int = 4) -> str:
         memories = self.query(query, n)

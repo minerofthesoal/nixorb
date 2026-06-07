@@ -7,6 +7,7 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
+from typing import Any, cast
 
 import aiohttp
 
@@ -154,16 +155,17 @@ class OpenAIBackend(LLMBackend):
         if tools:
             kwargs["tools"] = tools
         try:
-            async with self._client.chat.completions.stream(**kwargs) as s:
-                async for event in s:
-                    if not event.choices:
-                        continue
-                    delta = event.choices[0].delta
-                    if delta and delta.content:
-                        chunk = delta.content
-                        await bus.emit(Event.LLM_CHUNK, data={"chunk": chunk},
-                                       source="OpenAIBackend", priority=3)
-                        yield chunk
+            stream = await self._client.chat.completions.create(**kwargs)
+            async for event in stream:
+                choices = cast(Any, event).choices
+                if not choices:
+                    continue
+                delta = choices[0].delta
+                if delta and delta.content:
+                    chunk = delta.content
+                    await bus.emit(Event.LLM_CHUNK, data={"chunk": chunk},
+                                   source="OpenAIBackend", priority=3)
+                    yield chunk
         except Exception as exc:
             log.error("OpenAI stream error: %s", exc)
             await bus.emit(Event.LLM_ERROR, data={"error": str(exc)},

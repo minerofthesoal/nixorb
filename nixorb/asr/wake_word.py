@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import sounddevice as sd
@@ -31,9 +31,9 @@ class WakeWordDetector:
         self._settings    = settings
         self._last_fired  = 0.0
         self._loop:  asyncio.AbstractEventLoop | None = None
-        self._model  = None
+        self._model: Any | None = None
 
-    def _load_model(self):
+    def _load_model(self) -> Any | None:
         """Load OWW model — handles API differences between versions."""
         try:
             from openwakeword.model import Model  # type: ignore[import]
@@ -58,7 +58,9 @@ class WakeWordDetector:
     async def run_forever(self) -> None:
         self._loop  = asyncio.get_running_loop()
         self._model = await self._loop.run_in_executor(None, self._load_model)
-        if self._model is None:
+        model = self._model
+        loop = self._loop
+        if model is None:
             log.error("WakeWord detector disabled — model not loaded")
             return
 
@@ -73,7 +75,7 @@ class WakeWordDetector:
             pcm = (indata[:, 0] * 32_767).astype(np.int16)
 
             try:
-                preds = self._model.predict(pcm)
+                preds = model.predict(pcm)
             except Exception as exc:
                 log.debug("WakeWord predict error: %s", exc)
                 return
@@ -95,7 +97,7 @@ class WakeWordDetector:
                             data={"word": str(name), "score": score_f},
                             source="WakeWordDetector",
                         ),
-                        self._loop,
+                        loop,
                     )
 
         with sd.InputStream(

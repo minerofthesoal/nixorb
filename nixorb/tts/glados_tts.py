@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import sounddevice as sd
@@ -34,10 +34,10 @@ class GladosTTS:
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        self._pipeline = None
+        self._pipeline: tuple[str, Any] | None = None
         self._loaded   = False
 
-    def _load(self):
+    def _load(self) -> tuple[str, Any]:
         try:
             from transformers import pipeline as hf_pipeline
             # Try TTS pipeline directly
@@ -77,7 +77,7 @@ class GladosTTS:
             return None
         kind, pipe = self._pipeline
         if kind == "pipeline":
-            out = pipe(text)
+            out = cast(Any, pipe)(text)
             arr = np.array(out["audio"], dtype=np.float32)
             if arr.ndim > 1:
                 arr = arr[0]
@@ -96,7 +96,7 @@ def _has_cuda() -> bool:
         return False
 
 
-def _load_speecht5(token: str):
+def _load_speecht5(token: str | None) -> tuple[str, Any]:
     import torch
     from datasets import load_dataset
     from transformers import SpeechT5ForTextToSpeech, SpeechT5HifiGan, SpeechT5Processor
@@ -115,7 +115,7 @@ def _load_speecht5(token: str):
     return ("speecht5", (proc, model, voc, spk))
 
 
-def _synthesise_speecht5(pipe, text: str) -> bytes | None:
+def _synthesise_speecht5(pipe: Any, text: str) -> bytes | None:
     import torch
     proc, model, voc, spk = pipe
     inputs = proc(text=text, return_tensors="pt").to(spk.device)
