@@ -3,7 +3,7 @@
 # Place this file in its own directory and run: makepkg -si
 
 pkgname=nixorb
-pkgver=0.1.0
+pkgver=0.01.0.05
 pkgrel=1
 pkgdesc="Floating AI assistant orb for Arch Linux — KDE Plasma 6 Wayland"
 arch=('x86_64')
@@ -62,6 +62,9 @@ prepare() {
         pygments \
         openwakeword \
         huggingface-hub \
+        transformers \
+        accelerate \
+        torch \
         cryptography \
         aiofiles \
         sounddevice \

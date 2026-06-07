@@ -2,20 +2,20 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from nixorb.core.event_bus import Event, bus
+from nixorb.utils.paths import asset_path
 
 if TYPE_CHECKING:
     from nixorb.settings import Settings
 
 log = logging.getLogger(__name__)
 
-_ICON = Path(__file__).parents[2] / "assets" / "tray_icon.png"
+_ICON = asset_path("tray_icon.png")
 
 
 class NixOrbTray(QSystemTrayIcon):
@@ -60,6 +60,6 @@ class NixOrbTray(QSystemTrayIcon):
         SettingsWindow.show_singleton()
 
     def _quit(self) -> None:
-        import sys
+        from PySide6.QtWidgets import QApplication
         bus.emit_sync(Event.SHUTDOWN, source="tray")
-        sys.exit(0)
+        QApplication.quit()
