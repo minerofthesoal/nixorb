@@ -51,6 +51,7 @@ class Event(Enum):
     SHUTDOWN            = auto()
     LOG                 = auto()
     MIC_MUTED           = auto()
+    MIC_LEVEL           = auto()
 
 
 @dataclass
@@ -70,7 +71,7 @@ class EventBus:
     def __new__(cls) -> EventBus:
         if cls._instance is None:
             obj = super().__new__(cls)
-            obj._initialised = False
+            obj._initialised: bool = False
             cls._instance = obj
         return cls._instance
 
