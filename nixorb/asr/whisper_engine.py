@@ -6,15 +6,16 @@ faster-whisper ASR with non-blocking recording and VRAM paging.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import sounddevice as sd
 import torch
 
-from nixorb.core.event_bus import Event, bus
+from nixorb.core.event_bus import Event, EventBus
 from nixorb.core.vram_manager import ModelPriority, vram
 
 if TYPE_CHECKING:
@@ -89,14 +90,14 @@ class WhisperEngine:
 
     async def preload(self) -> None:
         """Download/load the configured ASR model without recording."""
-        async with vram.lease("whisper"):
+        async with await self._whisper_lease():
             return
 
     async def record_and_transcribe(self) -> str | None:
-        await bus.emit(Event.RECORDING_START, source="whisper")
+        await EventBus().emit(Event.RECORDING_START, source="whisper")
         loop = asyncio.get_running_loop()
         audio = await loop.run_in_executor(None, self._record_blocking)
-        await bus.emit(Event.RECORDING_STOP, source="whisper")
+        await EventBus().emit(Event.RECORDING_STOP, source="whisper")
 
         if audio is None or len(audio) < int(SAMPLE_RATE * 0.3):
             log.info("No usable microphone audio captured")
@@ -105,7 +106,7 @@ class WhisperEngine:
 
     def _emit_mic_level(self, level: float, rms_db: float) -> None:
         try:
-            bus.emit_sync(
+            EventBus().emit_sync(
                 Event.MIC_LEVEL,
                 data={"level": max(0.0, min(1.0, level)), "rms_db": rms_db},
                 source="whisper",
@@ -168,12 +169,22 @@ class WhisperEngine:
             return None
         return np.concatenate(chunks, axis=0).flatten()
 
+    async def _whisper_lease(self) -> Any:
+        """Return the Whisper VRAM lease, tolerating async test doubles."""
+        lease = vram.lease("whisper")
+        if inspect.isawaitable(lease):
+            lease = await lease
+        return lease
+
     async def _transcribe_async(self, audio: np.ndarray) -> str | None:
-        async with vram.lease("whisper") as model:
+        if audio is None or len(audio) == 0 or not np.any(audio):
+            return None
+
+        async with await self._whisper_lease() as model:
             loop = asyncio.get_running_loop()
             text = await loop.run_in_executor(None, self._transcribe_sync, model, audio)
         if text:
-            await bus.emit(
+            await EventBus().emit(
                 Event.TRANSCRIPT_READY,
                 data={"text": text},
                 source="whisper",
