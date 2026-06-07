@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import sounddevice as sd
@@ -17,19 +17,18 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-def _load_hf_tts(repo_id: str, token: str | None):
-    import torch
+def _load_hf_tts(repo_id: str, token: str | None) -> Any:
     from transformers import pipeline
-
+    task: Any = "text-to-speech"
     return pipeline(
-        "text-to-speech",
+        task,
         model=repo_id,
         token=token or None,
         device=0 if torch.cuda.is_available() else -1,
     )
 
 
-def _unload_hf_tts(pipe) -> None:
+def _unload_hf_tts(pipe: Any) -> None:
     del pipe
 
 
@@ -55,7 +54,7 @@ class HuggingFaceTTS:
         loop = asyncio.get_running_loop()
         try:
             async with vram.lease("hf_tts") as pipe:
-                output = await loop.run_in_executor(None, pipe, text)
+                output = await loop.run_in_executor(None, cast(Any, pipe), text)
             audio = output["audio"]           # numpy array
             sr    = output["sampling_rate"]
             pcm   = (audio * 32_767).astype(np.int16).tobytes()

@@ -21,7 +21,7 @@ import contextlib
 import logging
 import re
 import sys
-from typing import Any
+from typing import Any, cast
 
 log = logging.getLogger(__name__)
 
@@ -372,7 +372,7 @@ def main() -> None:
     app.setApplicationName("NixOrb")
     app.setApplicationVersion(__version__)
     app.setOrganizationName("NixOrb")
-    app.setQuitOnLastWindowClosed(False)
+    cast(Any, app).setQuitOnLastWindowClosed(False)
 
     # QEventLoop from qasync — wraps Qt event loop with asyncio
     loop = qasync.QEventLoop(app)

@@ -17,7 +17,7 @@ from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Any
+from typing import Any, cast
 
 log = logging.getLogger(__name__)
 
@@ -67,11 +67,17 @@ _Handler = Callable[[EventPayload], Awaitable[None]]
 
 class EventBus:
     _instance: EventBus | None = None
+    _initialised: bool
+    _handlers: dict[Event, list[tuple[int, _Handler]]]
+    _wildcard: list[tuple[int, _Handler]]
+    _queue: asyncio.PriorityQueue[tuple[int, int, EventPayload]]
+    _loop: asyncio.AbstractEventLoop | None
+    _running: bool
 
     def __new__(cls) -> EventBus:
         if cls._instance is None:
-            obj = super().__new__(cls)
-            obj._initialised: bool = False
+            obj = cast(EventBus, super().__new__(cls))
+            obj._initialised = False
             cls._instance = obj
         return cls._instance
 
