@@ -41,8 +41,9 @@ class GladosTTS:
         try:
             from transformers import pipeline as hf_pipeline
             # Try TTS pipeline directly
+            task: Any = "text-to-speech"
             pipe = hf_pipeline(
-                "text-to-speech",
+                task,
                 model=self._settings.tts_hf_repo,
                 token=self._settings.hf_token or None,
                 device=0 if _has_cuda() else -1,
@@ -103,12 +104,12 @@ def _load_speecht5(token: str | None) -> tuple[str, Any]:
 
     device = "cuda" if _has_cuda() else "cpu"
     proc  = SpeechT5Processor.from_pretrained("microsoft/speecht5_tts", token=token or None)
-    model = SpeechT5ForTextToSpeech.from_pretrained(
+    model = cast(Any, SpeechT5ForTextToSpeech.from_pretrained(
         "microsoft/speecht5_tts", token=token or None
-    ).to(device)
-    voc   = SpeechT5HifiGan.from_pretrained(
+    )).to(device)
+    voc   = cast(Any, SpeechT5HifiGan.from_pretrained(
         "microsoft/speecht5_hifigan", token=token or None
-    ).to(device)
+    )).to(device)
     embs  = load_dataset("Matthijs/cmu-arctic-xvectors", split="validation")
     # speaker 7306 = neutral/robotic sounding
     spk   = torch.tensor(embs[7306]["xvector"]).unsqueeze(0).to(device)

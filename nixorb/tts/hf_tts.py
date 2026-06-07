@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import logging
 from typing import TYPE_CHECKING, Any, cast
 
@@ -17,6 +18,13 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+def _hf_tts_device() -> int:
+    if importlib.util.find_spec("torch") is None:
+        return -1
+    import torch
+    return 0 if torch.cuda.is_available() else -1
+
+
 def _load_hf_tts(repo_id: str, token: str | None) -> Any:
     from transformers import pipeline
     task: Any = "text-to-speech"
@@ -24,7 +32,7 @@ def _load_hf_tts(repo_id: str, token: str | None) -> Any:
         task,
         model=repo_id,
         token=token or None,
-        device=0 if torch.cuda.is_available() else -1,
+        device=_hf_tts_device(),
     )
 
 
