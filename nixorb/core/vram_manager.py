@@ -157,7 +157,7 @@ class VRAMManager:
             )
             return int(out.decode().strip().split("\n")[0])
         except Exception:
-            if torch.cuda.is_available():
+            if _HAS_TORCH and torch is not None and torch.cuda.is_available():
                 free, _ = torch.cuda.mem_get_info(0)
                 return free // (1024 * 1024)
             return VRAM_BUDGET

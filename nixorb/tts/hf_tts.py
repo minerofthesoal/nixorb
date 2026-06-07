@@ -18,12 +18,14 @@ log = logging.getLogger(__name__)
 
 
 def _load_hf_tts(repo_id: str, token: str | None):
+    import torch
     from transformers import pipeline
+
     return pipeline(
         "text-to-speech",
         model=repo_id,
         token=token or None,
-        device=0,            # CUDA device 0
+        device=0 if torch.cuda.is_available() else -1,
     )
 
 
