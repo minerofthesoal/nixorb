@@ -198,7 +198,7 @@ class SettingsWindow(QDialog):
         g = QGroupBox("TTS — Text-to-Speech")
         f = QFormLayout(g)
         self._tts_backend = QComboBox()
-        self._tts_backend.addItems(["huggingface", "openai", "piper"])
+        self._tts_backend.addItems(["glados", "huggingface", "openai", "piper"])
         idx = self._tts_backend.findText(self._s.tts_backend)
         if idx >= 0:
             self._tts_backend.setCurrentIndex(idx)
@@ -229,7 +229,13 @@ class SettingsWindow(QDialog):
         w = QWidget()
         f = QFormLayout(w)
         self._mic_combo = QComboBox()
-        for i, d in enumerate(sd.query_devices()):
+        try:
+            devices = sd.query_devices()
+        except Exception as exc:
+            log.error("Could not query audio devices: %s", exc)
+            devices = []
+            self._mic_combo.addItem(f"(no audio devices found: {exc})", userData=None)
+        for i, d in enumerate(devices):
             if d["max_input_channels"] > 0:
                 self._mic_combo.addItem(f"[{i}] {d['name']}", userData=i)
         f.addRow("Microphone:", self._mic_combo)

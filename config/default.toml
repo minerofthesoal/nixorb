@@ -22,9 +22,9 @@ llm_vram_mb      = 4096
 llm_max_new_tokens = 512
 
 # ── TTS ───────────────────────────────────────────────────────────── #
-tts_backend = "huggingface"
-tts_hf_repo = "torphix/stablelm-2-glados-v1"  # GLaDOS voice
-tts_voice   = "alloy"           # used for OpenAI TTS backend
+tts_backend = "glados"                        # glados | huggingface | openai | piper
+tts_hf_repo = "microsoft/speecht5_tts"        # real TTS-capable model (used as fallback)
+tts_voice   = "alloy"                         # used for OpenAI TTS backend
 
 # ── Vision ────────────────────────────────────────────────────────── #
 vision_enabled = true

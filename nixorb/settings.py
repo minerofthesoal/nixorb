@@ -43,9 +43,15 @@ class Settings(BaseModel):
     llm_max_new_tokens:  int = 512
 
     # ── TTS ──────────────────────────────────────────────────────── #
-    tts_backend:  str = "huggingface"
-    # GLaDOS TTS voice
-    tts_hf_repo:  str = "torphix/stablelm-2-glados-v1"
+    # "glados" uses a GLaDOS-flavoured voice with an automatic SpeechT5
+    # fallback baked in, so it works out of the box with no extra setup.
+    tts_backend:  str = "glados"
+    # NOTE: torphix/stablelm-2-glados-v1 is a *text* (StableLM2) model, not a
+    # TTS model — it cannot be loaded by transformers' text-to-speech
+    # pipeline. Both the "glados" and "huggingface" backends detect this and
+    # fall back to microsoft/speecht5_tts automatically, but the default
+    # here now points at a real TTS-capable repo so first-run works.
+    tts_hf_repo:  str = "microsoft/speecht5_tts"
     tts_voice:    str = "alloy"
 
     # ── Vision ───────────────────────────────────────────────────── #

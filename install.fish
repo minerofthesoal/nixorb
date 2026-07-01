@@ -144,9 +144,15 @@ else
     echo "  Shaders compiled: orb_glow.vert.qsb  orb_glow.frag.qsb"
 end
 
-# ── 7. Verify installation ─────────────────────────────────────────── #
+# ── 7. Download models ──────────────────────────────────────────────── #
 echo ""
-echo "==> [7/7] Verifying installation..."
+echo "==> [7/8] Downloading ASR + wake-word models..."
+nixorb download-models
+or echo "  [WARN] Model download failed — run 'nixorb download-models' manually later."
+
+# ── 8. Verify installation ─────────────────────────────────────────── #
+echo ""
+echo "==> [8/8] Verifying installation..."
 
 set ERRORS 0
 
@@ -177,6 +183,7 @@ if test $ERRORS -eq 0
     echo "║    nixorb start           # launch the orb      ║"
     echo "║    nixorb ask 'hello'     # one-shot query      ║"
     echo "║    nixorb check-deps      # verify packages     ║"
+    echo "║    nixorb download-models # (re)fetch models    ║"
     echo "╚══════════════════════════════════════════════════╝"
 else
     echo "╔══════════════════════════════════════════════════╗"

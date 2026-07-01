@@ -68,8 +68,13 @@ class GladosTTS:
                     Event.TTS_AUDIO_CHUNK, data={"pcm": pcm}, source="GladosTTS"
                 )
                 await loop.run_in_executor(None, _play, pcm)
-        except Exception:
+        except Exception as exc:
             log.exception("GladosTTS synthesis failed")
+            await bus.emit(
+                Event.LOG,
+                data={"level": "error", "msg": f"❌ TTS failed: {exc}"},
+                source="GladosTTS",
+            )
         finally:
             await bus.emit(Event.TTS_DONE, source="GladosTTS")
 

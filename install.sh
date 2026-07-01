@@ -78,9 +78,16 @@ if [[ -n "$QSB" ]]; then
     echo "  Shaders compiled OK"
 fi
 
-# ── 7. Verify ──────────────────────────────────────────────────────── #
+# ── 7. Download models ──────────────────────────────────────────────── #
 echo ""
-echo "==> [7/7] Verifying..."
+echo "==> [7/8] Downloading ASR + wake-word models..."
+echo "  (LLM/TTS/vision models download automatically on first use instead —"
+echo "   they're much larger and picking the wrong one wastes bandwidth.)"
+nixorb download-models || echo "  [WARN] Model download failed — run 'nixorb download-models' manually later."
+
+# ── 8. Verify ──────────────────────────────────────────────────────── #
+echo ""
+echo "==> [8/8] Verifying..."
 nixorb version && echo "  nixorb CLI: OK"
 python -c "import torch; print('  torch', torch.__version__, 'CUDA:', torch.cuda.is_available())"
 python -c "import PySide6.QtCore; print('  PySide6: OK')" 2>/dev/null || echo "  [WARN] PySide6 issue"
@@ -88,5 +95,8 @@ python -c "import PySide6.QtCore; print('  PySide6: OK')" 2>/dev/null || echo " 
 echo ""
 echo "╔══════════════════════════════════════════════════╗"
 echo "║  ✅  Done. Run:  nixorb start                    ║"
+echo "║                                                    ║"
+echo "║  Wake word is OFF by default. Enable it with:     ║"
+echo "║    nixorb config wake_word_enabled true           ║"
 echo "╚══════════════════════════════════════════════════╝"
 echo ""

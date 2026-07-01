@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import re
 import sys
 from typing import Any, cast
@@ -148,6 +149,23 @@ async def _async_main(settings, app) -> None:
 
     from nixorb.action.executor import ActionExecutor
     executor = ActionExecutor(settings)
+
+    # Wire up the shell-command confirmation dialog. Without this, nothing
+    # ever listens for Event.ACTION_REQUESTED, so ActionExecutor's
+    # confirmation wait always times out after 30s and silently denies
+    # *every* command — no dialog, no error, no execution.
+    async def _on_action_requested(payload) -> None:
+        data = payload.data or {}
+        cmd  = data.get("command", "")
+        from nixorb.ui.confirm_dialog import ConfirmDialog
+        approved = ConfirmDialog.ask(cmd)  # blocking, but we're on the Qt thread
+        bus.emit_sync(
+            Event.ACTION_RESULT,
+            data={"command": cmd, "approved": approved},
+            source="ConfirmDialog",
+        )
+
+    bus.subscribe(Event.ACTION_REQUESTED, _on_action_requested, priority=1)
 
     from nixorb.plugins.loader import PluginLoader
     plugin_loader = PluginLoader(settings.plugin_dir)
@@ -354,6 +372,64 @@ async def _async_main(settings, app) -> None:
     await bus.stop()
 
 
+def _select_qt_platform() -> None:
+    """
+    Pick a Qt platform plugin that will actually initialise on this system,
+    *before* QApplication is constructed.
+
+    Why this matters: PySide6's pip wheel bundles its own copy of Qt,
+    which normally does NOT include a working "wayland" platform plugin
+    (only xcb/eglfs/minimal/offscreen). On a KDE Plasma Wayland session
+    with no DISPLAY set, Qt falls through every candidate platform, finds
+    none of them usable, and — because this happens inside libqxcb/libEGL
+    at the C++ level, not in Python — throws up its own native
+    "This application failed to start because no Qt platform plugin
+    could be initialized. Reinstalling the application may fix this
+    problem." message box, with nothing printed to the Python side and
+    therefore nothing in NixOrb's logs. That's the "random Qt popup with
+    no errors" symptom.
+
+    KDE Plasma runs XWayland by default, so forcing the "xcb" backend
+    (which talks to XWayland) is the most reliable fix without needing a
+    Qt build that ships a real Wayland plugin. We only do this if the
+    user hasn't already forced a platform themselves and DISPLAY isn't
+    already usable.
+    """
+    if os.environ.get("QT_QPA_PLATFORM"):
+        return  # user/packager already decided — don't override
+
+    session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
+    has_wayland  = bool(os.environ.get("WAYLAND_DISPLAY"))
+    has_x11      = bool(os.environ.get("DISPLAY"))
+
+    if session_type == "wayland" or has_wayland:
+        if has_x11:
+            # XWayland is available — this is what actually works reliably
+            # with pip-installed PySide6 today.
+            os.environ["QT_QPA_PLATFORM"] = "xcb"
+            log.info("Qt: Wayland session detected, using xcb via XWayland")
+        else:
+            # No XWayland either — try native wayland, but don't blow up if
+            # the plugin is missing; log clearly instead of letting Qt pop
+            # up its native error dialog.
+            os.environ.setdefault("QT_QPA_PLATFORM", "wayland")
+            log.warning(
+                "Qt: Wayland session with no DISPLAY (no XWayland) — "
+                "attempting native 'wayland' Qt platform plugin. If NixOrb "
+                "doesn't start, install qt6-wayland and/or enable XWayland, "
+                "then retry, or set QT_QPA_PLATFORM=xcb manually."
+            )
+    elif not has_x11:
+        # Neither Wayland nor X11 detected at all (e.g. launched from a
+        # systemd unit without a display forwarded) — fail loudly in the
+        # log instead of silently trying to open a window with no display.
+        log.error(
+            "Qt: no DISPLAY and no WAYLAND_DISPLAY detected — NixOrb needs "
+            "a graphical session. If you're launching it from systemd or a "
+            "script, make sure DISPLAY/WAYLAND_DISPLAY are inherited."
+        )
+
+
 def main() -> None:
     import qasync
     from PySide6.QtWidgets import QApplication
@@ -366,6 +442,8 @@ def main() -> None:
         format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
         datefmt="%H:%M:%S",
     )
+
+    _select_qt_platform()
 
     app = QApplication.instance() or QApplication(sys.argv)
     from nixorb import __version__

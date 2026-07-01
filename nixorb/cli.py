@@ -11,6 +11,7 @@ Usage:
   nixorb config key           read one config key
   nixorb config key value     set a config key
   nixorb config-gui           open Settings window standalone
+  nixorb download-models      download ASR + wake-word models
   nixorb check-deps           verify Arch packages
   nixorb list-devices         list microphones
   nixorb list-plugins         show plugins
@@ -288,6 +289,40 @@ def config_gui(
     win = SettingsWindow(settings)
     win.show()
     qt_app.exec()
+
+
+# ── download-models ───────────────────────────────────────────────── #
+
+@app.command(name="download-models")
+def download_models(
+    whisper_only: bool       = typer.Option(False, "--whisper-only"),
+    wake_only:    bool       = typer.Option(False, "--wake-only"),
+    config_path:  Path | None = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Download the ASR (faster-whisper) and wake-word (openWakeWord) models.
+
+    Nothing else needs this step — HuggingFace LLM/TTS/vision models are
+    downloaded automatically on first use. Safe to re-run at any time.
+    """
+    settings = _load_settings(config_path)
+    from nixorb.utils.model_downloader import download_all
+
+    do_whisper = not wake_only
+    do_wake    = not whisper_only
+
+    with console.status("[bold green]Downloading models…[/bold green]"):
+        errors = download_all(
+            settings,
+            whisper=do_whisper,
+            wake_word=do_wake,
+            on_progress=lambda msg: console.print(f"  {msg}"),
+        )
+
+    if errors:
+        for err in errors:
+            console.print(f"[red]✗[/red] {err}")
+        raise typer.Exit(1)
+    console.print("[green]✅  All requested models downloaded.[/green]")
 
 
 # ── check-deps ────────────────────────────────────────────────────── #
