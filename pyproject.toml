@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 
 [project]
 name        = "nixorb"
-version     = "0.01.0.05"
+version     = "0.01.0.06"
 description = "Floating AI assistant orb for Arch Linux — KDE Plasma 6 Wayland"
 readme      = "README.md"
 license     = { text = "MIT" }
