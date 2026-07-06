@@ -48,7 +48,19 @@ prepare() {
     cd "${pkgname}-${pkgver}"
     # Install Python dependencies into a venv for packaging
     python -m venv --system-site-packages .venv
-    .venv/bin/pip install --no-build-isolation \
+    # NOTE: do NOT pass --no-build-isolation here. Several transitive deps
+    # (e.g. evdev, pulled in by pynput) ship as sdists that need to compile
+    # a C extension and declare their own build-system requirements
+    # (setuptools, wheel, sometimes cython) in pyproject.toml. Disabling
+    # build isolation forces pip to use whatever's already importable in
+    # this venv instead of fetching those declared build deps — which is
+    # exactly what caused CI failures like:
+    #   pip._vendor.pyproject_hooks._impl.BackendUnavailable:
+    #   Cannot import 'setuptools.build_meta'
+    # Build isolation is cheap (it's just build-time tooling, not runtime
+    # dependencies) and lets each sdist bring its own correct build deps.
+    .venv/bin/pip install --upgrade pip setuptools wheel
+    .venv/bin/pip install \
         faster-whisper \
         openai \
         chromadb \

@@ -1,0 +1,159 @@
+diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
+index 3a33cf7..57b9397 100644
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -39,12 +39,16 @@ jobs:
+     name: Resolve version
+     runs-on: ubuntu-22.04
+     outputs:
++      package:    ${{ steps.resolve.outputs.package }}
+       version:    ${{ steps.resolve.outputs.version }}
+       prerelease: ${{ steps.resolve.outputs.prerelease }}
+       tag:        ${{ steps.resolve.outputs.tag }}
+     steps:
++      - uses: actions/checkout@v4
++
+       - id: resolve
+         run: |
++          PACKAGE=$(grep -m1 '^name' pyproject.toml | sed -E 's/^name\s*=\s*"([^"]+)".*/\1/')
+           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+             VERSION="${{ github.event.inputs.version }}"
+             PRERELEASE="${{ github.event.inputs.prerelease }}"
+@@ -59,10 +63,33 @@ jobs:
+             fi
+           fi
+           TAG="v${VERSION}"
++          echo "package=$PACKAGE"    >> "$GITHUB_OUTPUT"
+           echo "version=$VERSION"    >> "$GITHUB_OUTPUT"
+           echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+           echo "tag=$TAG"            >> "$GITHUB_OUTPUT"
+-          echo "Resolved: version=$VERSION  prerelease=$PRERELEASE  tag=$TAG"
++          echo "Resolved: package=$PACKAGE  version=$VERSION  prerelease=$PRERELEASE  tag=$TAG"
++
++      # Publishes package name + the exact version you picked, linked
++      # right away — visible on the workflow run page the moment the
++      # release starts, before any of the builds below even finish.
++      - name: Publish version summary
++        run: |
++          PACKAGE="${{ steps.resolve.outputs.package }}"
++          VERSION="${{ steps.resolve.outputs.version }}"
++          TAG="${{ steps.resolve.outputs.tag }}"
++          REPO="${{ github.server_url }}/${{ github.repository }}"
++          {
++            echo "## 🚀 Releasing \`${PACKAGE}\` ${VERSION}"
++            echo ""
++            echo "| | |"
++            echo "|---|---|"
++            echo "| Package | \`${PACKAGE}\` |"
++            echo "| Version | \`${VERSION}\` |"
++            echo "| Tag | [\`${TAG}\`](${REPO}/releases/tag/${TAG}) |"
++            echo "| PyPI (once published) | [pypi.org/project/${PACKAGE}/${VERSION}/](https://pypi.org/project/${PACKAGE}/${VERSION}/) |"
++            echo "| GitHub Release (once created) | [${REPO}/releases/tag/${TAG}](${REPO}/releases/tag/${TAG}) |"
++            echo ""
++          } >> "$GITHUB_STEP_SUMMARY"
+ 
+   # ────────────────────────────────────────────────────────────────── #
+   #  Python wheel + sdist                                              #
+@@ -246,7 +273,11 @@ jobs:
+     runs-on: ubuntu-22.04
+     needs: meta
+     container:
+-      image: bilelmoussaoui/flatpak-github-actions:kde-6.8
++      # NOTE: docker.io/bilelmoussaoui/flatpak-github-actions is deprecated
++      # upstream and no longer published for newer runtimes (there is no
++      # "kde-6.8" tag under that image, hence "manifest unknown" pulls).
++      # The maintained successor lives under flathub-infra on ghcr.io.
++      image: ghcr.io/flathub-infra/flatpak-github-actions:kde-6.8
+       options: --privileged
+     steps:
+       - uses: actions/checkout@v4
+@@ -266,7 +297,9 @@ jobs:
+             2>/dev/null || true
+ 
+       - name: Build Flatpak
+-        uses: bilelmoussaoui/flatpak-github-actions/flatpak-builder@v6
++        # NOTE: bilelmoussaoui/flatpak-github-actions is deprecated; the
++        # actively maintained fork/successor is flatpak/flatpak-github-actions.
++        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+         with:
+           bundle:        NixOrb-${{ needs.meta.outputs.version }}.flatpak
+           manifest-path: packaging/io.nixorb.NixOrb.yml
+@@ -326,6 +359,7 @@ jobs:
+           } >> "$GITHUB_OUTPUT"
+ 
+       - name: Create release
++        id: gh_release
+         uses: softprops/action-gh-release@v2
+         with:
+           tag_name:   ${{ needs.meta.outputs.tag }}
+@@ -366,3 +400,45 @@ jobs:
+             release-assets/pacman-pkg/*
+             release-assets/appimage/*
+             release-assets/flatpak/*
++
++  # ────────────────────────────────────────────────────────────────── #
++  #  Publish version + links summary                                  #
++  #  Always runs last, regardless of which build jobs succeeded, so    #
++  #  the workflow run page always shows the package name and version  #
++  #  you picked, linked directly to where it actually landed.         #
++  # ────────────────────────────────────────────────────────────────── #
++  publish-summary:
++    name: Publish version summary
++    runs-on: ubuntu-22.04
++    needs: [meta, publish-pypi, create-release]
++    if: always()
++    steps:
++      - name: Write summary
++        run: |
++          PACKAGE="${{ needs.meta.outputs.package }}"
++          VERSION="${{ needs.meta.outputs.version }}"
++          TAG="${{ needs.meta.outputs.tag }}"
++          REPO="${{ github.server_url }}/${{ github.repository }}"
++
++          RELEASE_STATUS="${{ needs['create-release'].result }}"
++          PYPI_STATUS="${{ needs['publish-pypi'].result }}"
++
++          {
++            echo "## 📦 ${PACKAGE} ${VERSION} — published"
++            echo ""
++            echo "| Target | Status | Link |"
++            echo "|---|---|---|"
++            if [ "$RELEASE_STATUS" = "success" ]; then
++              echo "| GitHub Release | ✅ | [${TAG}](${REPO}/releases/tag/${TAG}) |"
++            else
++              echo "| GitHub Release | ⚠️ ${RELEASE_STATUS} | [${TAG}](${REPO}/releases/tag/${TAG}) |"
++            fi
++            if [ "$PYPI_STATUS" = "success" ]; then
++              echo "| PyPI | ✅ | [${PACKAGE} ${VERSION}](https://pypi.org/project/${PACKAGE}/${VERSION}/) |"
++            else
++              echo "| PyPI | ⚠️ ${PYPI_STATUS} | [${PACKAGE} ${VERSION}](https://pypi.org/project/${PACKAGE}/${VERSION}/) |"
++            fi
++            echo "| Workflow run | — | [this run](${REPO}/actions/runs/${{ github.run_id }}) |"
++            echo ""
++            echo "_Resolved from: $([ "${{ github.event_name }}" = "workflow_dispatch" ] && echo "manual input \`${VERSION}\`" || echo "pushed tag \`${GITHUB_REF_NAME}\`")_"
++          } >> "$GITHUB_STEP_SUMMARY"
+diff --git a/packaging/PKGBUILD b/packaging/PKGBUILD
+index 7286652..ba6ab03 100644
+--- a/packaging/PKGBUILD
++++ b/packaging/PKGBUILD
+@@ -48,7 +48,19 @@ prepare() {
+     cd "${pkgname}-${pkgver}"
+     # Install Python dependencies into a venv for packaging
+     python -m venv --system-site-packages .venv
+-    .venv/bin/pip install --no-build-isolation \
++    # NOTE: do NOT pass --no-build-isolation here. Several transitive deps
++    # (e.g. evdev, pulled in by pynput) ship as sdists that need to compile
++    # a C extension and declare their own build-system requirements
++    # (setuptools, wheel, sometimes cython) in pyproject.toml. Disabling
++    # build isolation forces pip to use whatever's already importable in
++    # this venv instead of fetching those declared build deps — which is
++    # exactly what caused CI failures like:
++    #   pip._vendor.pyproject_hooks._impl.BackendUnavailable:
++    #   Cannot import 'setuptools.build_meta'
++    # Build isolation is cheap (it's just build-time tooling, not runtime
++    # dependencies) and lets each sdist bring its own correct build deps.
++    .venv/bin/pip install --upgrade pip setuptools wheel
++    .venv/bin/pip install \
+         faster-whisper \
+         openai \
+         chromadb \
