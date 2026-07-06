@@ -26,8 +26,8 @@ log = logging.getLogger(__name__)
 
 _QML_PATH = asset_path("orb.qml")
 
-QML_IMPORT_NAME    = "NixOrb"
-QML_IMPORT_VERSION = "1.0"
+QML_IMPORT_NAME          = "NixOrb"
+QML_IMPORT_MAJOR_VERSION = 1
 
 
 @QmlElement
