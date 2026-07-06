@@ -29,6 +29,7 @@ echo "==> [1/7] Installing system packages..."
 sudo pacman -S --needed --noconfirm \
     python \
     qt6-base qt6-declarative qt6-wayland qt6-multimedia qt6-tools \
+    qt6-shadertools \
     cuda cudnn \
     portaudio \
     wl-clipboard grim \
@@ -134,7 +135,7 @@ end
 if test -z "$QSB"
     echo "  [WARN] qsb not found — shaders will not be compiled."
     echo "         The orb will fail to render until you compile shaders."
-    echo "         Fix: sudo pacman -S qt6-tools && fish install.fish --shaders-only"
+    echo "         Fix: sudo pacman -S qt6-shadertools && fish install.fish --shaders-only"
 else
     echo "  Found qsb at: $QSB"
     $QSB --glsl "100es,120,150" --hlsl 50 --msl 12 \

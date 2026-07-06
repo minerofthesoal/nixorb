@@ -111,6 +111,22 @@ async def _async_main(settings, app) -> None:
     await bus.start()
     log.info("NixOrb %s starting", settings.__class__.__module__)
 
+    # Prime qasync's cross-thread wakeup mechanism *from the Qt thread*
+    # before anything spawns a raw (non-QThread) background thread —
+    # HotkeyManager's pynput listener and WakeWordDetector's audio callback
+    # both eventually call bus.emit_sync(), which reaches into this same
+    # loop via asyncio.run_coroutine_threadsafe() from their own threads.
+    # If that loop's Qt-side wakeup notifier/timer is instead lazily
+    # created on first use, and that first use happens to be one of those
+    # background threads, Qt logs:
+    #   QSocketNotifier: Can only be used with threads started with QThread
+    #   QObject::startTimer: Timers can only be used with threads started with QThread
+    # and the event loop can be left in a broken state (no crash, no further
+    # logs — which is exactly what running `nixorb start` looks like when
+    # this fires early). A no-op call_soon_threadsafe() from the Qt thread
+    # itself forces any such lazy setup to happen safely, before it matters.
+    asyncio.get_running_loop().call_soon_threadsafe(lambda: None)
+
     # Show Qt surfaces before dependency/model initialisation so packaged
     # launches never look hung while models are being cached.
     from nixorb.ui.settings_window import SettingsWindow

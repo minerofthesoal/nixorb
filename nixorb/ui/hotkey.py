@@ -72,6 +72,18 @@ def _pynput_combo(hotkey: str) -> str:
 class HotkeyManager:
     def __init__(self, settings: Settings) -> None:
         self._hotkey = settings.hotkey
+        # A tiny persistent QObject living on the Qt/main thread purely so
+        # QMetaObject.invokeMethod has somewhere safe to land callbacks
+        # dispatched from pynput's own (non-QThread) listener thread.
+        from PySide6.QtCore import QObject, Slot
+
+        class _MainThreadRelay(QObject):
+            @Slot()
+            def fire(self_inner) -> None:
+                log.info("🔔 Hotkey triggered: %s", self._hotkey)
+                bus.emit_sync(Event.HOTKEY_TRIGGERED, source="HotkeyManager")
+
+        self._relay = _MainThreadRelay()
 
     def start(self) -> None:
         t = threading.Thread(target=self._run, daemon=True, name="nixorb-hotkey-init")
@@ -83,12 +95,22 @@ class HotkeyManager:
 
         try:
             from pynput import keyboard  # type: ignore[import]
+            from PySide6.QtCore import Qt, QMetaObject
             combo = _pynput_combo(self._hotkey)
             log.info("Hotkey: registering %s → pynput %s", self._hotkey, combo)
 
             def _activate() -> None:
-                log.info("🔔 Hotkey triggered: %s", self._hotkey)
-                bus.emit_sync(Event.HOTKEY_TRIGGERED, source="HotkeyManager")
+                # This runs on pynput's own listener thread, which Qt does
+                # not recognise as a QThread. QMetaObject.invokeMethod with
+                # a queued connection is Qt's documented thread-safe way to
+                # get from here to the main/Qt thread — unlike touching
+                # bus.emit_sync() (and therefore the qasync loop) directly
+                # from this thread, which is what previously produced
+                # "QSocketNotifier / QObject::startTimer: Can only be used
+                # with threads started with QThread" warnings.
+                QMetaObject.invokeMethod(
+                    self._relay, "fire", Qt.ConnectionType.QueuedConnection
+                )
 
             listener = keyboard.GlobalHotKeys({combo: _activate})
             listener.start()

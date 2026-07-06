@@ -6,7 +6,7 @@ AppDir:
     id:      io.nixorb.NixOrb
     name:    NixOrb
     icon:    nixorb
-    version: 0.01.0.04
+    version: !ENV ${NIXORB_VERSION}
     exec:    usr/bin/python3
     exec_args: -m nixorb.cli start $@
 
@@ -14,6 +14,11 @@ AppDir:
     arch: amd64
     sources:
       - sourceline: deb http://archive.ubuntu.com/ubuntu jammy main restricted universe
+        key_url: 'https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x871920D1991BC93C'
+      - sourceline: deb http://archive.ubuntu.com/ubuntu jammy-updates main restricted universe
+        key_url: 'https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x871920D1991BC93C'
+      - sourceline: deb http://security.ubuntu.com/ubuntu jammy-security main restricted universe
+        key_url: 'https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x871920D1991BC93C'
     include:
       - python3
       - python3-pip

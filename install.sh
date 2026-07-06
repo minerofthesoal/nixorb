@@ -17,6 +17,7 @@ echo ""
 echo "==> [1/7] Installing system packages..."
 sudo pacman -S --needed --noconfirm \
     python qt6-base qt6-declarative qt6-wayland qt6-multimedia qt6-tools \
+    qt6-shadertools \
     cuda cudnn portaudio wl-clipboard grim ffmpeg base-devel git
 
 command -v yay &>/dev/null && \
@@ -64,7 +65,7 @@ if [[ -z "$QSB" ]]; then
     if [[ -x /usr/lib/qt6/bin/qsb ]]; then
         QSB=/usr/lib/qt6/bin/qsb
     else
-        echo "  [WARN] qsb not found — install qt6-tools. Shaders NOT compiled."
+        echo "  [WARN] qsb not found — install qt6-shadertools. Shaders NOT compiled."
         echo "         Run:  /usr/lib/qt6/bin/qsb --glsl '100es,120,150' --hlsl 50 --msl 12 \\"
         echo "                  assets/shaders/orb_glow.vert -o assets/shaders/orb_glow.vert.qsb"
     fi

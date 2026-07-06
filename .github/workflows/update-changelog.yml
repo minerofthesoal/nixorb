@@ -1,0 +1,236 @@
+name: Update Changelog (LM Studio)
+
+# ─────────────────────────────────────────────────────────────────────
+# Drafts a CHANGELOG.md entry using a LOCAL LLM via LM Studio's
+# OpenAI-compatible API, reached over your Tailscale tailnet.
+#
+# One-time setup (repo Settings → Secrets and variables → Actions):
+#   1. Install Tailscale on the machine running LM Studio, if not already:
+#        https://tailscale.com/download
+#   2. In the Tailscale admin console → Settings → OAuth clients →
+#      Generate OAuth client. Scope: "Devices" → Core → Write.
+#   3. Add a tag (e.g. "tag:ci") and make sure your ACLs allow tag:ci to
+#      reach the LM Studio machine (Access controls in the admin console).
+#   4. Create two repo secrets:
+#        TS_OAUTH_CLIENT_ID
+#        TS_OAUTH_SECRET
+#   5. Set the "lm_studio_url" input below to your machine's Tailscale
+#      hostname, e.g. http://blazer-desktop.your-tailnet.ts.net:1234/v1
+#      (find the exact hostname in the Tailscale admin console → Machines)
+#
+# LM Studio itself: open LM Studio → Developer → Start Server, with a
+# model loaded, before running this workflow.
+#
+# Usage: Actions tab → "Update Changelog (LM Studio)" → Run workflow.
+# ─────────────────────────────────────────────────────────────────────
+
+on:
+  workflow_dispatch:
+    inputs:
+      lm_studio_url:
+        description: 'LM Studio API base URL, reached via Tailscale (e.g. http://my-pc.tailnet.ts.net:1234/v1)'
+        required: true
+        default: 'http://localhost:1234/v1'
+      model:
+        description: 'Model id as shown in LM Studio (blank = whatever is currently loaded)'
+        required: false
+        default: ''
+      since:
+        description: 'Git ref to summarize commits from (blank = since the last tag)'
+        required: false
+        default: ''
+      version_label:
+        description: 'Version heading for the new entry (e.g. 0.1.0.7). Blank = "Unreleased"'
+        required: false
+        default: ''
+      mode:
+        description: 'Open a PR to review, or commit straight to the branch'
+        required: false
+        default: 'pull_request'
+        type: choice
+        options: ['pull_request', 'direct_commit']
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-changelog:
+    name: Draft changelog with local LLM
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret:    ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Verify LM Studio is reachable
+        run: |
+          URL="${{ inputs.lm_studio_url }}"
+          echo "Checking $URL/models ..."
+          if ! curl -sf --max-time 5 "$URL/models" > /tmp/lm_models.json; then
+            echo "::error::Could not reach LM Studio at $URL"
+            echo "::error::Open LM Studio → Developer → Start Server, and make sure a model is loaded."
+            exit 1
+          fi
+          echo "LM Studio is up. Loaded models:"
+          cat /tmp/lm_models.json
+
+      - name: Gather commit range
+        id: range
+        run: |
+          SINCE="${{ inputs.since }}"
+          if [ -z "$SINCE" ]; then
+            SINCE=$(git tag --sort=-version:refname | head -1 || true)
+          fi
+          if [ -n "$SINCE" ]; then
+            echo "Summarizing commits since: $SINCE"
+            git log "${SINCE}..HEAD" --no-merges --pretty=format:'- %s' > /tmp/commits.txt
+          else
+            echo "No previous tag found — summarizing last 30 commits"
+            git log -30 --no-merges --pretty=format:'- %s' > /tmp/commits.txt
+          fi
+          COUNT=$(wc -l < /tmp/commits.txt)
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+          echo "--- Commits being summarized ---"
+          cat /tmp/commits.txt
+          if [ "$COUNT" -eq 0 ]; then
+            echo "::error::No commits found in range — nothing to summarize."
+            exit 1
+          fi
+
+      - name: Ask LM Studio to draft the changelog entry
+        id: draft
+        run: |
+          python3 - << 'PYEOF'
+          import json
+          import os
+          import sys
+          import urllib.request
+
+          url = os.environ["LM_URL"].rstrip("/") + "/chat/completions"
+          model = os.environ.get("LM_MODEL", "").strip()
+
+          with open("/tmp/commits.txt") as f:
+              commits = f.read().strip()
+
+          with open("CHANGELOG.md") as f:
+              existing = f.read()[:2000]  # just enough to show the format
+
+          system_prompt = (
+              "You write changelog entries for NixOrb, a desktop AI assistant. "
+              "You will be given raw git commit subject lines and must produce ONE "
+              "new changelog section in Keep a Changelog style, matching the exact "
+              "formatting of the existing file shown to you: a '## [VERSION] — DATE' "
+              "heading (use today's date), followed by '### Added' / '### Changed' / "
+              "'### Fixed' / '### Removed' subsections as needed (omit empty ones), "
+              "each with concise bullet points aimed at end users, not raw commit "
+              "messages. Merge duplicate/related commits into single bullets. Do not "
+              "invent changes that aren't implied by the commits. Output ONLY the new "
+              "markdown section — no preamble, no explanation, no code fences."
+          )
+
+          user_prompt = (
+              f"Existing CHANGELOG.md format (for style reference only):\n\n"
+              f"{existing}\n\n"
+              f"---\n\nNew commits to summarize:\n\n{commits}\n\n"
+              f"Version heading to use: {os.environ.get('LM_VERSION') or 'Unreleased'}"
+          )
+
+          payload = {
+              "messages": [
+                  {"role": "system", "content": system_prompt},
+                  {"role": "user", "content": user_prompt},
+              ],
+              "temperature": 0.3,
+          }
+          if model:
+              payload["model"] = model
+
+          req = urllib.request.Request(
+              url,
+              data=json.dumps(payload).encode(),
+              headers={"Content-Type": "application/json"},
+              method="POST",
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=120) as resp:
+                  data = json.load(resp)
+          except Exception as exc:
+              print(f"::error::LM Studio request failed: {exc}", file=sys.stderr)
+              sys.exit(1)
+
+          try:
+              text = data["choices"][0]["message"]["content"].strip()
+          except (KeyError, IndexError) as exc:
+              print(f"::error::Unexpected LM Studio response shape: {data}", file=sys.stderr)
+              sys.exit(1)
+
+          if not text.startswith("##"):
+              print("::warning::Model output didn't start with '##' — writing anyway.", file=sys.stderr)
+
+          with open("/tmp/new_entry.md", "w") as f:
+              f.write(text + "\n\n")
+
+          print("--- Drafted entry ---")
+          print(text)
+          PYEOF
+        env:
+          LM_URL:     ${{ inputs.lm_studio_url }}
+          LM_MODEL:   ${{ inputs.model }}
+          LM_VERSION: ${{ inputs.version_label }}
+
+      - name: Insert entry into CHANGELOG.md
+        run: |
+          # Always insert the newest entry at the very top of the file.
+          # Only keep a leading "# Changelog" title line in place if it's
+          # genuinely the FIRST line — checking "does this text appear
+          # anywhere in the file" is not reliable, since some changelogs
+          # (including this repo's, at least historically) have that title
+          # positioned further down rather than at the top.
+          FIRST_LINE=$(head -1 CHANGELOG.md)
+          if [ "$FIRST_LINE" = "# Changelog" ]; then
+            {
+              echo "# Changelog"
+              echo ""
+              cat /tmp/new_entry.md
+              tail -n +2 CHANGELOG.md
+            } > /tmp/CHANGELOG.new
+          else
+            cat /tmp/new_entry.md CHANGELOG.md > /tmp/CHANGELOG.new
+          fi
+          mv /tmp/CHANGELOG.new CHANGELOG.md
+          echo "--- Resulting top of CHANGELOG.md ---"
+          head -30 CHANGELOG.md
+
+      - name: Commit directly
+        if: inputs.mode == 'direct_commit'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git commit -m "docs: update changelog (LM Studio draft, ${{ inputs.model || 'local model' }})"
+          git push
+
+      - name: Open PR for review
+        if: inputs.mode == 'pull_request'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "docs: update changelog (LM Studio draft, ${{ inputs.model || 'local model' }})"
+          title: "Changelog draft: ${{ inputs.version_label || 'Unreleased' }}"
+          body: |
+            Auto-drafted from git history by a local LLM via LM Studio.
+
+            **Model:** `${{ inputs.model || '(whatever was loaded)' }}`
+            **Commit range:** `${{ inputs.since || 'since last tag' }}`
+
+            Please review before merging — the model may have missed nuance,
+            merged unrelated changes, or gotten a detail wrong.
+          branch: "changelog/lmstudio-draft-${{ github.run_id }}"
+          add-paths: CHANGELOG.md

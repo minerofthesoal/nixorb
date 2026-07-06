@@ -1,0 +1,534 @@
+diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
+index 57b9397..d871acb 100644
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -105,10 +105,10 @@ jobs:
+         with:
+           python-version: ${{ env.PYTHON_VERSION }}
+ 
+-      - name: Patch version in pyproject.toml
++      - name: Patch version
+         run: |
+-          sed -i "s/^version = .*/version = \"${{ needs.meta.outputs.version }}\"/" pyproject.toml
+-          grep "^version" pyproject.toml
++          sed -i "s/^__version__ = .*/__version__ = \"${{ needs.meta.outputs.version }}\"/" nixorb/__init__.py
++          grep "^__version__" nixorb/__init__.py
+ 
+       - name: Build
+         run: |
+@@ -143,9 +143,24 @@ jobs:
+           name: python-dist
+           path: dist/
+ 
++      - name: Check if this version is already on PyPI
++        id: check
++        run: |
++          PACKAGE="${{ needs.meta.outputs.package }}"
++          VERSION="${{ needs.meta.outputs.version }}"
++          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
++            "https://pypi.org/pypi/${PACKAGE}/${VERSION}/json")
++          if [ "$STATUS" = "200" ]; then
++            echo "exists=true" >> "$GITHUB_OUTPUT"
++            echo "::notice::${PACKAGE} ${VERSION} is already published on PyPI — skipping upload."
++            echo "::notice::If you meant to publish new changes, bump the version and re-run."
++          else
++            echo "exists=false" >> "$GITHUB_OUTPUT"
++          fi
++
+       - name: Publish to PyPI
++        if: steps.check.outputs.exists != 'true'
+         uses: pypa/gh-action-pypi-publish@release/v1
+-        continue-on-error: true   # don't fail the whole release if PyPI rejects
+ 
+   # ────────────────────────────────────────────────────────────────── #
+   #  Arch Linux pacman package                                         #
+@@ -166,7 +181,7 @@ jobs:
+           pacman -S --noconfirm \
+             base-devel git python python-pip \
+             python-build python-installer python-wheel \
+-            qt6-base qt6-declarative qt6-tools \
++            qt6-base qt6-declarative qt6-tools qt6-shadertools \
+             python-hatchling \
+             cmake ninja gcc
+ 
+@@ -174,7 +189,7 @@ jobs:
+         run: |
+           VERSION="${{ needs.meta.outputs.version }}"
+           sed -i "s/^pkgver=.*/pkgver=${VERSION}/" packaging/PKGBUILD
+-          sed -i "s/^version = .*/version = \"${VERSION}\"/" pyproject.toml
++          sed -i "s/^__version__ = .*/__version__ = \"${VERSION}\"/" nixorb/__init__.py
+ 
+       - name: Build source tarball
+         run: |
+@@ -226,11 +241,12 @@ jobs:
+           sudo apt-get install -y --no-install-recommends \
+             libportaudio2 portaudio19-dev ffmpeg libfuse2 \
+             qt6-base-dev qt6-declarative-dev qt6-tools-dev \
++            qt6-shadertools-dev \
+             python3-dev
+ 
+       - name: Patch version
+         run: |
+-          sed -i "s/^version = .*/version = \"${{ needs.meta.outputs.version }}\"/" pyproject.toml
++          sed -i "s/^__version__ = .*/__version__ = \"${{ needs.meta.outputs.version }}\"/" nixorb/__init__.py
+ 
+       - name: Install Python tools
+         run: |
+@@ -284,7 +300,7 @@ jobs:
+ 
+       - name: Patch version
+         run: |
+-          sed -i "s/^version = .*/version = \"${{ needs.meta.outputs.version }}\"/" pyproject.toml
++          sed -i "s/^__version__ = .*/__version__ = \"${{ needs.meta.outputs.version }}\"/" nixorb/__init__.py
+ 
+       - name: Pre-download Python wheels
+         run: |
+diff --git a/.github/workflows/update-changelog.yml b/.github/workflows/update-changelog.yml
+new file mode 100644
+index 0000000..74378c3
+--- /dev/null
++++ b/.github/workflows/update-changelog.yml
+@@ -0,0 +1,236 @@
++name: Update Changelog (LM Studio)
++
++# ─────────────────────────────────────────────────────────────────────
++# Drafts a CHANGELOG.md entry using a LOCAL LLM via LM Studio's
++# OpenAI-compatible API, reached over your Tailscale tailnet.
++#
++# One-time setup (repo Settings → Secrets and variables → Actions):
++#   1. Install Tailscale on the machine running LM Studio, if not already:
++#        https://tailscale.com/download
++#   2. In the Tailscale admin console → Settings → OAuth clients →
++#      Generate OAuth client. Scope: "Devices" → Core → Write.
++#   3. Add a tag (e.g. "tag:ci") and make sure your ACLs allow tag:ci to
++#      reach the LM Studio machine (Access controls in the admin console).
++#   4. Create two repo secrets:
++#        TS_OAUTH_CLIENT_ID
++#        TS_OAUTH_SECRET
++#   5. Set the "lm_studio_url" input below to your machine's Tailscale
++#      hostname, e.g. http://blazer-desktop.your-tailnet.ts.net:1234/v1
++#      (find the exact hostname in the Tailscale admin console → Machines)
++#
++# LM Studio itself: open LM Studio → Developer → Start Server, with a
++# model loaded, before running this workflow.
++#
++# Usage: Actions tab → "Update Changelog (LM Studio)" → Run workflow.
++# ─────────────────────────────────────────────────────────────────────
++
++on:
++  workflow_dispatch:
++    inputs:
++      lm_studio_url:
++        description: 'LM Studio API base URL, reached via Tailscale (e.g. http://my-pc.tailnet.ts.net:1234/v1)'
++        required: true
++        default: 'http://localhost:1234/v1'
++      model:
++        description: 'Model id as shown in LM Studio (blank = whatever is currently loaded)'
++        required: false
++        default: ''
++      since:
++        description: 'Git ref to summarize commits from (blank = since the last tag)'
++        required: false
++        default: ''
++      version_label:
++        description: 'Version heading for the new entry (e.g. 0.1.0.7). Blank = "Unreleased"'
++        required: false
++        default: ''
++      mode:
++        description: 'Open a PR to review, or commit straight to the branch'
++        required: false
++        default: 'pull_request'
++        type: choice
++        options: ['pull_request', 'direct_commit']
++
++permissions:
++  contents: write
++  pull-requests: write
++
++jobs:
++  update-changelog:
++    name: Draft changelog with local LLM
++    runs-on: ubuntu-22.04
++    steps:
++      - uses: actions/checkout@v4
++        with:
++          fetch-depth: 0
++
++      - name: Connect to Tailscale
++        uses: tailscale/github-action@v4
++        with:
++          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
++          oauth-secret:    ${{ secrets.TS_OAUTH_SECRET }}
++          tags: tag:ci
++
++      - name: Verify LM Studio is reachable
++        run: |
++          URL="${{ inputs.lm_studio_url }}"
++          echo "Checking $URL/models ..."
++          if ! curl -sf --max-time 5 "$URL/models" > /tmp/lm_models.json; then
++            echo "::error::Could not reach LM Studio at $URL"
++            echo "::error::Open LM Studio → Developer → Start Server, and make sure a model is loaded."
++            exit 1
++          fi
++          echo "LM Studio is up. Loaded models:"
++          cat /tmp/lm_models.json
++
++      - name: Gather commit range
++        id: range
++        run: |
++          SINCE="${{ inputs.since }}"
++          if [ -z "$SINCE" ]; then
++            SINCE=$(git tag --sort=-version:refname | head -1 || true)
++          fi
++          if [ -n "$SINCE" ]; then
++            echo "Summarizing commits since: $SINCE"
++            git log "${SINCE}..HEAD" --no-merges --pretty=format:'- %s' > /tmp/commits.txt
++          else
++            echo "No previous tag found — summarizing last 30 commits"
++            git log -30 --no-merges --pretty=format:'- %s' > /tmp/commits.txt
++          fi
++          COUNT=$(wc -l < /tmp/commits.txt)
++          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
++          echo "--- Commits being summarized ---"
++          cat /tmp/commits.txt
++          if [ "$COUNT" -eq 0 ]; then
++            echo "::error::No commits found in range — nothing to summarize."
++            exit 1
++          fi
++
++      - name: Ask LM Studio to draft the changelog entry
++        id: draft
++        run: |
++          python3 - << 'PYEOF'
++          import json
++          import os
++          import sys
++          import urllib.request
++
++          url = os.environ["LM_URL"].rstrip("/") + "/chat/completions"
++          model = os.environ.get("LM_MODEL", "").strip()
++
++          with open("/tmp/commits.txt") as f:
++              commits = f.read().strip()
++
++          with open("CHANGELOG.md") as f:
++              existing = f.read()[:2000]  # just enough to show the format
++
++          system_prompt = (
++              "You write changelog entries for NixOrb, a desktop AI assistant. "
++              "You will be given raw git commit subject lines and must produce ONE "
++              "new changelog section in Keep a Changelog style, matching the exact "
++              "formatting of the existing file shown to you: a '## [VERSION] — DATE' "
++              "heading (use today's date), followed by '### Added' / '### Changed' / "
++              "'### Fixed' / '### Removed' subsections as needed (omit empty ones), "
++              "each with concise bullet points aimed at end users, not raw commit "
++              "messages. Merge duplicate/related commits into single bullets. Do not "
++              "invent changes that aren't implied by the commits. Output ONLY the new "
++              "markdown section — no preamble, no explanation, no code fences."
++          )
++
++          user_prompt = (
++              f"Existing CHANGELOG.md format (for style reference only):\n\n"
++              f"{existing}\n\n"
++              f"---\n\nNew commits to summarize:\n\n{commits}\n\n"
++              f"Version heading to use: {os.environ.get('LM_VERSION') or 'Unreleased'}"
++          )
++
++          payload = {
++              "messages": [
++                  {"role": "system", "content": system_prompt},
++                  {"role": "user", "content": user_prompt},
++              ],
++              "temperature": 0.3,
++          }
++          if model:
++              payload["model"] = model
++
++          req = urllib.request.Request(
++              url,
++              data=json.dumps(payload).encode(),
++              headers={"Content-Type": "application/json"},
++              method="POST",
++          )
++          try:
++              with urllib.request.urlopen(req, timeout=120) as resp:
++                  data = json.load(resp)
++          except Exception as exc:
++              print(f"::error::LM Studio request failed: {exc}", file=sys.stderr)
++              sys.exit(1)
++
++          try:
++              text = data["choices"][0]["message"]["content"].strip()
++          except (KeyError, IndexError) as exc:
++              print(f"::error::Unexpected LM Studio response shape: {data}", file=sys.stderr)
++              sys.exit(1)
++
++          if not text.startswith("##"):
++              print("::warning::Model output didn't start with '##' — writing anyway.", file=sys.stderr)
++
++          with open("/tmp/new_entry.md", "w") as f:
++              f.write(text + "\n\n")
++
++          print("--- Drafted entry ---")
++          print(text)
++          PYEOF
++        env:
++          LM_URL:     ${{ inputs.lm_studio_url }}
++          LM_MODEL:   ${{ inputs.model }}
++          LM_VERSION: ${{ inputs.version_label }}
++
++      - name: Insert entry into CHANGELOG.md
++        run: |
++          # Always insert the newest entry at the very top of the file.
++          # Only keep a leading "# Changelog" title line in place if it's
++          # genuinely the FIRST line — checking "does this text appear
++          # anywhere in the file" is not reliable, since some changelogs
++          # (including this repo's, at least historically) have that title
++          # positioned further down rather than at the top.
++          FIRST_LINE=$(head -1 CHANGELOG.md)
++          if [ "$FIRST_LINE" = "# Changelog" ]; then
++            {
++              echo "# Changelog"
++              echo ""
++              cat /tmp/new_entry.md
++              tail -n +2 CHANGELOG.md
++            } > /tmp/CHANGELOG.new
++          else
++            cat /tmp/new_entry.md CHANGELOG.md > /tmp/CHANGELOG.new
++          fi
++          mv /tmp/CHANGELOG.new CHANGELOG.md
++          echo "--- Resulting top of CHANGELOG.md ---"
++          head -30 CHANGELOG.md
++
++      - name: Commit directly
++        if: inputs.mode == 'direct_commit'
++        run: |
++          git config user.name  "github-actions[bot]"
++          git config user.email "github-actions[bot]@users.noreply.github.com"
++          git add CHANGELOG.md
++          git commit -m "docs: update changelog (LM Studio draft, ${{ inputs.model || 'local model' }})"
++          git push
++
++      - name: Open PR for review
++        if: inputs.mode == 'pull_request'
++        uses: peter-evans/create-pull-request@v6
++        with:
++          commit-message: "docs: update changelog (LM Studio draft, ${{ inputs.model || 'local model' }})"
++          title: "Changelog draft: ${{ inputs.version_label || 'Unreleased' }}"
++          body: |
++            Auto-drafted from git history by a local LLM via LM Studio.
++
++            **Model:** `${{ inputs.model || '(whatever was loaded)' }}`
++            **Commit range:** `${{ inputs.since || 'since last tag' }}`
++
++            Please review before merging — the model may have missed nuance,
++            merged unrelated changes, or gotten a detail wrong.
++          branch: "changelog/lmstudio-draft-${{ github.run_id }}"
++          add-paths: CHANGELOG.md
+diff --git a/install.fish b/install.fish
+index cd8ff22..6c69de5 100644
+--- a/install.fish
++++ b/install.fish
+@@ -29,6 +29,7 @@ echo "==> [1/7] Installing system packages..."
+ sudo pacman -S --needed --noconfirm \
+     python \
+     qt6-base qt6-declarative qt6-wayland qt6-multimedia qt6-tools \
++    qt6-shadertools \
+     cuda cudnn \
+     portaudio \
+     wl-clipboard grim \
+@@ -134,7 +135,7 @@ end
+ if test -z "$QSB"
+     echo "  [WARN] qsb not found — shaders will not be compiled."
+     echo "         The orb will fail to render until you compile shaders."
+-    echo "         Fix: sudo pacman -S qt6-tools && fish install.fish --shaders-only"
++    echo "         Fix: sudo pacman -S qt6-shadertools && fish install.fish --shaders-only"
+ else
+     echo "  Found qsb at: $QSB"
+     $QSB --glsl "100es,120,150" --hlsl 50 --msl 12 \
+diff --git a/install.sh b/install.sh
+index b9152fc..8b43b6d 100644
+--- a/install.sh
++++ b/install.sh
+@@ -17,6 +17,7 @@ echo ""
+ echo "==> [1/7] Installing system packages..."
+ sudo pacman -S --needed --noconfirm \
+     python qt6-base qt6-declarative qt6-wayland qt6-multimedia qt6-tools \
++    qt6-shadertools \
+     cuda cudnn portaudio wl-clipboard grim ffmpeg base-devel git
+ 
+ command -v yay &>/dev/null && \
+@@ -64,7 +65,7 @@ if [[ -z "$QSB" ]]; then
+     if [[ -x /usr/lib/qt6/bin/qsb ]]; then
+         QSB=/usr/lib/qt6/bin/qsb
+     else
+-        echo "  [WARN] qsb not found — install qt6-tools. Shaders NOT compiled."
++        echo "  [WARN] qsb not found — install qt6-shadertools. Shaders NOT compiled."
+         echo "         Run:  /usr/lib/qt6/bin/qsb --glsl '100es,120,150' --hlsl 50 --msl 12 \\"
+         echo "                  assets/shaders/orb_glow.vert -o assets/shaders/orb_glow.vert.qsb"
+     fi
+diff --git a/nixorb/main.py b/nixorb/main.py
+index c05dfff..cc203bc 100644
+--- a/nixorb/main.py
++++ b/nixorb/main.py
+@@ -111,6 +111,22 @@ async def _async_main(settings, app) -> None:
+     await bus.start()
+     log.info("NixOrb %s starting", settings.__class__.__module__)
+ 
++    # Prime qasync's cross-thread wakeup mechanism *from the Qt thread*
++    # before anything spawns a raw (non-QThread) background thread —
++    # HotkeyManager's pynput listener and WakeWordDetector's audio callback
++    # both eventually call bus.emit_sync(), which reaches into this same
++    # loop via asyncio.run_coroutine_threadsafe() from their own threads.
++    # If that loop's Qt-side wakeup notifier/timer is instead lazily
++    # created on first use, and that first use happens to be one of those
++    # background threads, Qt logs:
++    #   QSocketNotifier: Can only be used with threads started with QThread
++    #   QObject::startTimer: Timers can only be used with threads started with QThread
++    # and the event loop can be left in a broken state (no crash, no further
++    # logs — which is exactly what running `nixorb start` looks like when
++    # this fires early). A no-op call_soon_threadsafe() from the Qt thread
++    # itself forces any such lazy setup to happen safely, before it matters.
++    asyncio.get_running_loop().call_soon_threadsafe(lambda: None)
++
+     # Show Qt surfaces before dependency/model initialisation so packaged
+     # launches never look hung while models are being cached.
+     from nixorb.ui.settings_window import SettingsWindow
+diff --git a/nixorb/ui/hotkey.py b/nixorb/ui/hotkey.py
+index 68a0518..5bcc1e0 100644
+--- a/nixorb/ui/hotkey.py
++++ b/nixorb/ui/hotkey.py
+@@ -72,6 +72,18 @@ def _pynput_combo(hotkey: str) -> str:
+ class HotkeyManager:
+     def __init__(self, settings: Settings) -> None:
+         self._hotkey = settings.hotkey
++        # A tiny persistent QObject living on the Qt/main thread purely so
++        # QMetaObject.invokeMethod has somewhere safe to land callbacks
++        # dispatched from pynput's own (non-QThread) listener thread.
++        from PySide6.QtCore import QObject, Slot
++
++        class _MainThreadRelay(QObject):
++            @Slot()
++            def fire(self_inner) -> None:
++                log.info("🔔 Hotkey triggered: %s", self._hotkey)
++                bus.emit_sync(Event.HOTKEY_TRIGGERED, source="HotkeyManager")
++
++        self._relay = _MainThreadRelay()
+ 
+     def start(self) -> None:
+         t = threading.Thread(target=self._run, daemon=True, name="nixorb-hotkey-init")
+@@ -83,12 +95,22 @@ class HotkeyManager:
+ 
+         try:
+             from pynput import keyboard  # type: ignore[import]
++            from PySide6.QtCore import Qt, QMetaObject
+             combo = _pynput_combo(self._hotkey)
+             log.info("Hotkey: registering %s → pynput %s", self._hotkey, combo)
+ 
+             def _activate() -> None:
+-                log.info("🔔 Hotkey triggered: %s", self._hotkey)
+-                bus.emit_sync(Event.HOTKEY_TRIGGERED, source="HotkeyManager")
++                # This runs on pynput's own listener thread, which Qt does
++                # not recognise as a QThread. QMetaObject.invokeMethod with
++                # a queued connection is Qt's documented thread-safe way to
++                # get from here to the main/Qt thread — unlike touching
++                # bus.emit_sync() (and therefore the qasync loop) directly
++                # from this thread, which is what previously produced
++                # "QSocketNotifier / QObject::startTimer: Can only be used
++                # with threads started with QThread" warnings.
++                QMetaObject.invokeMethod(
++                    self._relay, "fire", Qt.ConnectionType.QueuedConnection
++                )
+ 
+             listener = keyboard.GlobalHotKeys({combo: _activate})
+             listener.start()
+diff --git a/packaging/PKGBUILD b/packaging/PKGBUILD
+index ba6ab03..479b972 100644
+--- a/packaging/PKGBUILD
++++ b/packaging/PKGBUILD
+@@ -12,7 +12,7 @@ license=('MIT')
+ install=nixorb.install
+ depends=(
+     'python>=3.12'
+-    'python-pyside6'
++    'pyside6'
+     'qt6-wayland'
+     'qt6-declarative'
+     'qt6-multimedia'
+@@ -34,7 +34,8 @@ makedepends=(
+     'python-installer'
+     'python-wheel'
+     'python-setuptools>=68'
+-    'qt6-tools'     # for qsb shader compiler
++    'qt6-tools'
++    'qt6-shadertools'     # for qsb shader compiler
+ )
+ source=("${pkgname}-${pkgver}.tar.gz::https://github.com/nixorb/nixorb/archive/refs/tags/v${pkgver}.tar.gz")
+ sha256sums=('SKIP')   # CI fills this in
+diff --git a/packaging/appimage/AppImageBuilder.yml b/packaging/appimage/AppImageBuilder.yml
+index cc88cf4..d5980f6 100644
+--- a/packaging/appimage/AppImageBuilder.yml
++++ b/packaging/appimage/AppImageBuilder.yml
+@@ -6,7 +6,7 @@ AppDir:
+     id:      io.nixorb.NixOrb
+     name:    NixOrb
+     icon:    nixorb
+-    version: 0.01.0.04
++    version: !ENV ${NIXORB_VERSION}
+     exec:    usr/bin/python3
+     exec_args: -m nixorb.cli start $@
+ 
+@@ -14,6 +14,11 @@ AppDir:
+     arch: amd64
+     sources:
+       - sourceline: deb http://archive.ubuntu.com/ubuntu jammy main restricted universe
++        key_url: 'https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x871920D1991BC93C'
++      - sourceline: deb http://archive.ubuntu.com/ubuntu jammy-updates main restricted universe
++        key_url: 'https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x871920D1991BC93C'
++      - sourceline: deb http://security.ubuntu.com/ubuntu jammy-security main restricted universe
++        key_url: 'https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x871920D1991BC93C'
+     include:
+       - python3
+       - python3-pip
+diff --git a/packaging/appimage/build_appimage.sh b/packaging/appimage/build_appimage.sh
+index 185beef..40bc7ed 100644
+--- a/packaging/appimage/build_appimage.sh
++++ b/packaging/appimage/build_appimage.sh
+@@ -14,7 +14,13 @@ set -euo pipefail
+ 
+ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ PROJECT_ROOT="$(realpath "$SCRIPT_DIR/../..")"
+-VERSION="${1:-$(python3 -c 'import tomllib; d=tomllib.load(open("'"$PROJECT_ROOT/pyproject.toml"'","rb")); print(d["project"]["version"])')}"
++VERSION="${1:-$(python3 -c "
++import re
++with open('$PROJECT_ROOT/nixorb/__init__.py') as f:
++    content = f.read()
++m = re.search(r'__version__\s*=\s*[\"\\']([^\"\\']+)[\"\\']', content)
++print(m.group(1))
++")}"
+ 
+ echo "==> Building NixOrb AppImage v${VERSION}"
+ export NIXORB_VERSION="$VERSION"
+diff --git a/pyproject.toml b/pyproject.toml
+index fe7fa21..0d09ebf 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
+ 
+ [project]
+ name        = "nixorb"
+-version     = "0.01.0.06"
++dynamic     = ["version"]
+ description = "Floating AI assistant orb for Arch Linux — KDE Plasma 6 Wayland"
+ readme      = "README.md"
+ license     = { text = "MIT" }
+@@ -67,6 +67,9 @@ Homepage   = "https://github.com/minerofthesoal/nixorb"
+ Repository = "https://github.com/minerofthesoal/nixorb"
+ Issues     = "https://github.com/minerofthesoal/nixorb/issues"
+ 
++[tool.hatch.version]
++path = "nixorb/__init__.py"
++
+ [tool.hatch.build.targets.wheel]
+ packages = ["nixorb"]
+ 

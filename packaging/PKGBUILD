@@ -12,7 +12,7 @@ license=('MIT')
 install=nixorb.install
 depends=(
     'python>=3.12'
-    'python-pyside6'
+    'pyside6'
     'qt6-wayland'
     'qt6-declarative'
     'qt6-multimedia'
@@ -34,7 +34,8 @@ makedepends=(
     'python-installer'
     'python-wheel'
     'python-setuptools>=68'
-    'qt6-tools'     # for qsb shader compiler
+    'qt6-tools'
+    'qt6-shadertools'     # for qsb shader compiler
 )
 source=("${pkgname}-${pkgver}.tar.gz::https://github.com/nixorb/nixorb/archive/refs/tags/v${pkgver}.tar.gz")
 sha256sums=('SKIP')   # CI fills this in

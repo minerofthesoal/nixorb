@@ -14,7 +14,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(realpath "$SCRIPT_DIR/../..")"
-VERSION="${1:-$(python3 -c 'import tomllib; d=tomllib.load(open("'"$PROJECT_ROOT/pyproject.toml"'","rb")); print(d["project"]["version"])')}"
+VERSION="${1:-$(python3 -c "
+import re
+with open('$PROJECT_ROOT/nixorb/__init__.py') as f:
+    content = f.read()
+m = re.search(r'__version__\s*=\s*[\"\\']([^\"\\']+)[\"\\']', content)
+print(m.group(1))
+")}"
 
 echo "==> Building NixOrb AppImage v${VERSION}"
 export NIXORB_VERSION="$VERSION"

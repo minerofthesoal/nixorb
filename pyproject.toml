@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 
 [project]
 name        = "nixorb"
-version     = "0.01.0.06"
+dynamic     = ["version"]
 description = "Floating AI assistant orb for Arch Linux — KDE Plasma 6 Wayland"
 readme      = "README.md"
 license     = { text = "MIT" }
@@ -66,6 +66,9 @@ nixorb-gui = "nixorb.main:main"
 Homepage   = "https://github.com/minerofthesoal/nixorb"
 Repository = "https://github.com/minerofthesoal/nixorb"
 Issues     = "https://github.com/minerofthesoal/nixorb/issues"
+
+[tool.hatch.version]
+path = "nixorb/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["nixorb"]
