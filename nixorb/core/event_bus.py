@@ -84,6 +84,10 @@ class EventBus:
     def _ensure_init(self) -> None:
         if self._initialised:
             return
+        self._reset_state()
+        self._initialised = True
+
+    def _reset_state(self) -> None:
         self._handlers: dict[Event, list[tuple[int, _Handler]]] = defaultdict(list)
         self._wildcard:  list[tuple[int, _Handler]] = []
         self._queue: asyncio.PriorityQueue[tuple[int, int, EventPayload]] = (
@@ -91,7 +95,25 @@ class EventBus:
         )
         self._loop:    asyncio.AbstractEventLoop | None = None
         self._running: bool = False
-        self._initialised  = True
+
+    def reset_for_tests(self) -> None:
+        """
+        Clear all handlers/queue/loop state **in place**, on this same
+        object, instead of swapping in a new instance.
+
+        This matters because many modules do
+        ``from nixorb.core.event_bus import bus`` at *import time*, which
+        binds a direct reference to whatever object was the singleton at
+        that moment. If a test fixture did ``EventBus._instance = None``
+        and then ``EventBus()`` to get a "fresh" bus, it would create a
+        second, disconnected object — every already-imported module would
+        keep talking to the old one, and events emitted on the "fresh" bus
+        in a test would never reach handlers subscribed via those modules
+        (or vice versa). Resetting state on the *same* object keeps every
+        existing reference valid.
+        """
+        self._reset_state()
+        self._initialised = True
 
     async def start(self) -> None:
         self._ensure_init()

@@ -154,18 +154,8 @@ async def _async_main(settings, app) -> None:
     # ever listens for Event.ACTION_REQUESTED, so ActionExecutor's
     # confirmation wait always times out after 30s and silently denies
     # *every* command — no dialog, no error, no execution.
-    async def _on_action_requested(payload) -> None:
-        data = payload.data or {}
-        cmd  = data.get("command", "")
-        from nixorb.ui.confirm_dialog import ConfirmDialog
-        approved = ConfirmDialog.ask(cmd)  # blocking, but we're on the Qt thread
-        bus.emit_sync(
-            Event.ACTION_RESULT,
-            data={"command": cmd, "approved": approved},
-            source="ConfirmDialog",
-        )
-
-    bus.subscribe(Event.ACTION_REQUESTED, _on_action_requested, priority=1)
+    from nixorb.ui.confirm_dialog import register_confirmation_handler
+    register_confirmation_handler(bus, Event.ACTION_REQUESTED)
 
     from nixorb.plugins.loader import PluginLoader
     plugin_loader = PluginLoader(settings.plugin_dir)

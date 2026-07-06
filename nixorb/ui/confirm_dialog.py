@@ -76,3 +76,34 @@ class ConfirmDialog(QDialog):
         approved = result == QDialog.DialogCode.Accepted
         log.info("Command %s by user: %s", "approved" if approved else "denied", command[:80])
         return approved
+
+
+def register_confirmation_handler(bus, event, ask_fn=None) -> None:
+    """
+    Wire ``Event.ACTION_REQUESTED`` to a confirmation dialog and reply on
+    ``Event.ACTION_RESULT``.
+
+    Without this, nothing ever listens for ACTION_REQUESTED, so
+    ActionExecutor's confirmation wait always times out (30s) and silently
+    denies *every* command — no dialog ever appears, no error is shown.
+    This was exactly that bug: the wiring simply didn't exist anywhere.
+
+    ``ask_fn`` defaults to :meth:`ConfirmDialog.ask` and is overridable
+    purely so this can be unit-tested without booting a real Qt dialog.
+    """
+    from nixorb.core.event_bus import Event  # local import avoids cycles
+
+    if ask_fn is None:
+        ask_fn = ConfirmDialog.ask
+
+    async def _on_action_requested(payload) -> None:
+        data = payload.data or {}
+        cmd  = data.get("command", "")
+        approved = ask_fn(cmd)  # blocking Qt dialog — safe on the Qt/qasync thread
+        bus.emit_sync(
+            Event.ACTION_RESULT,
+            data={"command": cmd, "approved": approved},
+            source="ConfirmDialog",
+        )
+
+    bus.subscribe(event, _on_action_requested, priority=1)

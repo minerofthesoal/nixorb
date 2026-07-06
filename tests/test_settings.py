@@ -7,7 +7,13 @@ from nixorb.settings import _CONFIG_ENV, Settings
 def test_defaults():
     s = Settings()
     assert s.llm_backend == "huggingface"
-    assert s.tts_backend == "huggingface"
+    # "glados" is the default because it has an automatic SpeechT5 fallback
+    # baked in, so TTS actually produces audio out of the box. The old
+    # default ("huggingface" backend + tts_hf_repo pointed at a text-only
+    # StableLM checkpoint) silently produced no audio at all — see
+    # nixorb/tts/hf_tts.py and nixorb/tts/glados_tts.py.
+    assert s.tts_backend == "glados"
+    assert s.tts_hf_repo == "microsoft/speecht5_tts"
     assert s.hotkey == "Ctrl+Alt+Space"
     assert s.require_action_confirmation is True
 
