@@ -1,0 +1,13 @@
+diff --git a/nixorb/ui/hotkey.py b/nixorb/ui/hotkey.py
+index 5bcc1e0..efe2636 100644
+--- a/nixorb/ui/hotkey.py
++++ b/nixorb/ui/hotkey.py
+@@ -95,7 +95,7 @@ class HotkeyManager:
+ 
+         try:
+             from pynput import keyboard  # type: ignore[import]
+-            from PySide6.QtCore import Qt, QMetaObject
++            from PySide6.QtCore import QMetaObject, Qt
+             combo = _pynput_combo(self._hotkey)
+             log.info("Hotkey: registering %s → pynput %s", self._hotkey, combo)
+ 

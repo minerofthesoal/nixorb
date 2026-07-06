@@ -95,7 +95,7 @@ class HotkeyManager:
 
         try:
             from pynput import keyboard  # type: ignore[import]
-            from PySide6.QtCore import Qt, QMetaObject
+            from PySide6.QtCore import QMetaObject, Qt
             combo = _pynput_combo(self._hotkey)
             log.info("Hotkey: registering %s → pynput %s", self._hotkey, combo)
 
