@@ -1,0 +1,47 @@
+diff --git a/nixorb/main.py b/nixorb/main.py
+index cc203bc..57c772d 100644
+--- a/nixorb/main.py
++++ b/nixorb/main.py
+@@ -378,6 +378,34 @@ async def _async_main(settings, app) -> None:
+     await bus.stop()
+ 
+ 
++def _disable_crashing_accessibility_bridge() -> None:
++    """
++    Prevent a confirmed SIGSEGV: on KDE Plasma sessions (which register
++    AT-SPI accessibility support over DBus by default), Qt auto-constructs
++    a QSpiAccessibleBridge the moment QGuiApplication::exec() is entered.
++    That construction crashes inside PySide6's own
++    PySide::SignalManager::retrieveMetaObject — confirmed via a real
++    coredumpctl/gdb backtrace, not a guess:
++
++        QGuiApplication::exec()
++        -> QAccessible::setRootObject()
++        -> QXcbIntegration::accessibility()
++        -> QSpiAccessibleBridge::QSpiAccessibleBridge()
++        -> ... -> PySide::SignalManager::retrieveMetaObject()
++        -> crash inside CPython's own allocator/unicode decoding
++
++    QT_ACCESSIBILITY is Qt's own official switch for this subsystem
++    (normally opt-in via this variable, but KDE's automatic AT-SPI
++    DBus registration can trigger it regardless of whether the app asked
++    for it). Setting it to "0" stops Qt from ever constructing the bridge,
++    which avoids the crash entirely. This only disables the AT-SPI/screen
++    reader integration bridge — it has no effect on the rest of the app.
++    We respect an explicit override if the user has already set this
++    themselves (e.g. because they rely on a screen reader).
++    """
++    os.environ.setdefault("QT_ACCESSIBILITY", "0")
++
++
+ def _select_qt_platform() -> None:
+     """
+     Pick a Qt platform plugin that will actually initialise on this system,
+@@ -449,6 +477,7 @@ def main() -> None:
+         datefmt="%H:%M:%S",
+     )
+ 
++    _disable_crashing_accessibility_bridge()
+     _select_qt_platform()
+ 
+     app = QApplication.instance() or QApplication(sys.argv)
