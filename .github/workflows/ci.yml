@@ -36,8 +36,24 @@ jobs:
       - name: Install Python dependencies (CPU-only torch for CI)
         run: |
           pip install --upgrade pip
-          pip install torch==2.7.1+cpu torchaudio==2.7.1+cpu \
-            --index-url https://download.pytorch.org/whl/cpu
+
+          # download.pytorch.org (and its CDN redirect, download-r2.pytorch.org)
+          # has long-standing, well-documented intermittent TLS/connection
+          # failures unrelated to this project — retry with backoff instead
+          # of failing the whole job on a transient blip.
+          for attempt in 1 2 3 4 5; do
+            if pip install torch==2.7.1+cpu torchaudio==2.7.1+cpu \
+                 --index-url https://download.pytorch.org/whl/cpu; then
+              break
+            fi
+            if [ "$attempt" -eq 5 ]; then
+              echo "::error::Failed to install torch from PyTorch's CDN after 5 attempts."
+              exit 1
+            fi
+            echo "Attempt $attempt failed, retrying in $((attempt * 10))s..."
+            sleep $((attempt * 10))
+          done
+
           pip install -e ".[dev]"
           # Mock packages that require GPU or native libs in CI
           pip install sounddevice soundfile numpy

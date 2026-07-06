@@ -251,8 +251,23 @@ jobs:
       - name: Install Python tools
         run: |
           pip install -q hatchling build
-          pip install -q torch==2.7.1+cpu \
-            --index-url https://download.pytorch.org/whl/cpu
+
+          # See ci.yml for context: download.pytorch.org / download-r2.pytorch.org
+          # has long-standing, well-documented intermittent TLS/connection
+          # failures unrelated to this project — retry with backoff.
+          for attempt in 1 2 3 4 5; do
+            if pip install -q torch==2.7.1+cpu \
+                 --index-url https://download.pytorch.org/whl/cpu; then
+              break
+            fi
+            if [ "$attempt" -eq 5 ]; then
+              echo "::error::Failed to install torch from PyTorch's CDN after 5 attempts."
+              exit 1
+            fi
+            echo "Attempt $attempt failed, retrying in $((attempt * 10))s..."
+            sleep $((attempt * 10))
+          done
+
           pip install -q appimage-builder
           pip install -q -e .
 
