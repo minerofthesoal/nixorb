@@ -133,12 +133,20 @@ async def _async_main(settings, app) -> None:
     SettingsWindow.init_settings(settings)
 
     from nixorb.ui.tray_icon import NixOrbTray
+    from PySide6.QtWidgets import QSystemTrayIcon
+    if not QSystemTrayIcon.isSystemTrayAvailable():
+        log.warning(
+            "System tray is not available on this desktop/session — the "
+            "tray icon will be constructed but may never become visible. "
+            "This is a desktop/compositor limitation, not a nixorb bug."
+        )
     tray = NixOrbTray(settings, app)
     tray.show()
 
     from nixorb.ui.orb_window import OrbWindow
     orb = OrbWindow(settings, app)
     orb.show()
+    orb._log_visibility_state()
 
     await vram.start_monitor(poll_interval=6.0)
 

@@ -1,0 +1,100 @@
+diff --git a/nixorb/main.py b/nixorb/main.py
+index 57c772d..4806f1b 100644
+--- a/nixorb/main.py
++++ b/nixorb/main.py
+@@ -133,12 +133,20 @@ async def _async_main(settings, app) -> None:
+     SettingsWindow.init_settings(settings)
+ 
+     from nixorb.ui.tray_icon import NixOrbTray
++    from PySide6.QtWidgets import QSystemTrayIcon
++    if not QSystemTrayIcon.isSystemTrayAvailable():
++        log.warning(
++            "System tray is not available on this desktop/session — the "
++            "tray icon will be constructed but may never become visible. "
++            "This is a desktop/compositor limitation, not a nixorb bug."
++        )
+     tray = NixOrbTray(settings, app)
+     tray.show()
+ 
+     from nixorb.ui.orb_window import OrbWindow
+     orb = OrbWindow(settings, app)
+     orb.show()
++    orb._log_visibility_state()
+ 
+     await vram.start_monitor(poll_interval=6.0)
+ 
+diff --git a/nixorb/ui/orb_window.py b/nixorb/ui/orb_window.py
+index b4bfce6..ecc2ae2 100644
+--- a/nixorb/ui/orb_window.py
++++ b/nixorb/ui/orb_window.py
+@@ -14,7 +14,7 @@ from PySide6.QtCore import (
+     Signal,
+     Slot,
+ )
+-from PySide6.QtGui import QColor, QMouseEvent, QWheelEvent
++from PySide6.QtGui import QColor, QGuiApplication, QMouseEvent, QWheelEvent
+ from PySide6.QtQml import QmlElement
+ from PySide6.QtQuick import QQuickView
+ from PySide6.QtWidgets import QApplication
+@@ -104,10 +104,19 @@ class OrbWindow(QQuickView):
+         self._start_amp_smoother()
+ 
+     def _setup_window(self) -> None:
++        # Qt.WindowType.Tool has no clean Wayland/xdg-shell equivalent and
++        # is a less portable choice than a plain Window — dropping it here
++        # as a reasonable simplification/hardening measure. NOTE: direct
++        # testing against a real (headless weston) Wayland compositor
++        # showed Tool did NOT by itself prevent the window from becoming
++        # visible/exposed, so this specific change is not a confirmed fix
++        # for any particular invisibility report — just a safer default.
++        # WindowStaysOnTopHint + FramelessWindowHint alone already give
++        # the borderless always-on-top orb look this needs.
+         self.setFlags(
+-            Qt.WindowType.FramelessWindowHint
++            Qt.WindowType.Window
++            | Qt.WindowType.FramelessWindowHint
+             | Qt.WindowType.WindowStaysOnTopHint
+-            | Qt.WindowType.Tool
+         )
+         self.setColor(QColor(0, 0, 0, 0))
+         size = self._settings.orb_size
+@@ -116,7 +125,38 @@ class OrbWindow(QQuickView):
+         sw     = screen.geometry().width() if screen else 1920
+         x = self._settings.orb_x if self._settings.orb_x is not None else sw - size - 40
+         y = self._settings.orb_y if self._settings.orb_y is not None else 40
+-        self.setPosition(x, y)
++
++        platform = QGuiApplication.platformName()
++        if platform == "wayland":
++            # Wayland's protocol deliberately does not let clients set an
++            # absolute top-level window position (a security/design
++            # choice, not a bug) — setPosition() here would silently do
++            # nothing. Skip the call and let the compositor place it
++            # rather than pretend we successfully positioned it.
++            log.info(
++                "Orb: running under native Wayland — the compositor "
++                "controls window placement, not the saved orb_x/orb_y "
++                "position (%d, %d)", x, y,
++            )
++        else:
++            self.setPosition(x, y)
++
++    def _log_visibility_state(self) -> None:
++        """Log whether the orb actually became visible — this is exactly
++        the kind of silent-failure state that's otherwise very hard to
++        diagnose (no crash, no exception, just nothing on screen)."""
++        log.info(
++            "Orb: visible=%s exposed=%s platform=%s geometry=%s",
++            self.isVisible(), self.isExposed(),
++            QGuiApplication.platformName(), self.geometry(),
++        )
++        if not self.isVisible():
++            log.warning(
++                "Orb window did not become visible after show(). This is "
++                "usually a compositor/window-manager issue rather than a "
++                "nixorb bug — check `journalctl --user -b` around this "
++                "time for window-manager-side errors."
++            )
+ 
+     def _setup_qml(self) -> None:
+         self.rootContext().setContextProperty("orbBridge", self._bridge)
