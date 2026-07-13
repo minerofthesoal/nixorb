@@ -1,31 +1,30 @@
-"""
-nixorb/main.py — NixOrb daemon entry point.
+"""NixOrb main entry point — AI assistant daemon.
 
-Threading model
-───────────────
-  Main thread  → Qt GUI via qasync QEventLoop
-  asyncio loop → EventBus, LLM streaming, TTS, web search
-  Thread pool  → sounddevice recording, Whisper, VRAM I/O
+Architecture:
+  Qt Main Thread     asyncio Event Loop        Thread Pool
+  ───────────────    ──────────────────        ───────────
+  OrbWindow (QML) ←  EventBus                 Whisper inference
+  SettingsWindow  ←  LLM streaming             Piper TTS
+  NixOrbTray      ←  VRAMManager               Command execution
+  HotkeyManager      PluginLoader
+                     VectorMemory (ChromaDB)
 
-QSocketNotifier / QThread warning fix
-──────────────────────────────────────
-  The warning fires when asyncio tries to install a Unix-socket-based
-  SIGINT watcher inside Qt's event loop. Fix: catch KeyboardInterrupt
-  at the outermost level and use app.aboutToQuit to trigger clean
-  shutdown — no loop.add_signal_handler(), no signal.signal().
+Pipeline:
+  Hotkey/WakeWord → Record Audio → Whisper STT → Ollama LLM →
+  Piper TTS → Speak + Execute Actions
 """
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import os
 import re
 import sys
-from typing import Any, cast
+from typing import Any
 
 log = logging.getLogger(__name__)
 
+# Keywords for feature detection
 _SCREEN_KW = frozenset({
     "screen", "looking at", "what's on", "what is on",
     "see my screen", "my display", "show me my",
@@ -36,72 +35,62 @@ _WEB_KW = frozenset({
     "today", "right now", "recently",
 })
 
-SYSTEM_PROMPT = """\
-You are NixOrb — a capable AI assistant running inside Arch Linux, \
-voiced with GLaDOS-style dry wit. You live as a glowing orb on the \
-user's Wayland desktop.
-
-Personality: precise, occasionally sardonic, never rude. You know \
-Arch Linux deeply. Keep responses concise unless depth is requested.
-
-Capabilities you have RIGHT NOW:
-1. TERMINAL — wrap bash in <ACTION>command</ACTION>.
-   Only when asked or when a task clearly requires it.
-   Always briefly explain what the command does.
-2. WEB SEARCH — auto-injected when your query seems to need it.
-3. SCREEN — you can see the desktop when asked.
-4. MEMORY — past conversations retrieved via vector search.
-5. PLUGINS — user-installed tools available as function calls.
-
-Rules:
-- Never use <ACTION> for explanations — only real executable commands.
-- Warn before destructive operations.
-- Use fenced code blocks for code.
-- If unsure about current facts, say so rather than hallucinate.
-
-System: Arch Linux · KDE Plasma 6 · Wayland · NVIDIA GTX 1080 · Python 3.12"""
-
 
 def _strip_actions(text: str) -> str:
+    """Remove <ACTION> tags from text for TTS."""
     return re.sub(r"<ACTION>.*?</ACTION>", "", text, flags=re.DOTALL).strip()
 
+
 def _wants_screen(text: str) -> bool:
+    """Check if the user is asking about their screen."""
     return any(kw in text.lower() for kw in _SCREEN_KW)
 
+
 def _wants_web(text: str) -> bool:
+    """Check if the user wants a web search."""
     return any(kw in text.lower() for kw in _WEB_KW)
 
 
-def _build_llm(settings):
-    from nixorb.llm.backends import (
-        HuggingFaceBackend,
-        LocalLLMBackend,
-        OfflineFallbackManager,
-        OllamaBackend,
-        OpenAIBackend,
-    )
-    b = settings.llm_backend.lower()
-    if b == "openai":
-        primary = OpenAIBackend(
-            settings.openai_api_key, settings.llm_model, settings.llm_base_url
+def _disable_crashing_accessibility_bridge() -> None:
+    """Prevent KDE Plasma AT-SPI accessibility bridge crash.
+
+    On KDE Plasma sessions, Qt auto-constructs a QSpiAccessibleBridge
+    which crashes inside PySide6. Setting QT_ACCESSIBILITY=0 prevents this.
+    """
+    os.environ.setdefault("QT_ACCESSIBILITY", "0")
+
+
+def _select_qt_platform() -> None:
+    """Select a working Qt platform plugin.
+
+    On Wayland sessions without a native Qt Wayland plugin, force xcb
+    (XWayland) which is more reliable with pip-installed PySide6.
+    """
+    if os.environ.get("QT_QPA_PLATFORM"):
+        return
+
+    session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
+    has_wayland = bool(os.environ.get("WAYLAND_DISPLAY"))
+    has_x11 = bool(os.environ.get("DISPLAY"))
+
+    if session_type == "wayland" or has_wayland:
+        if has_x11:
+            os.environ["QT_QPA_PLATFORM"] = "xcb"
+            log.info("Qt: Wayland session → using xcb via XWayland")
+        else:
+            os.environ.setdefault("QT_QPA_PLATFORM", "wayland")
+            log.warning(
+                "Qt: No XWayland — attempting native wayland plugin. "
+                "Install qt6-wayland if this fails."
+            )
+    elif not has_x11:
+        log.error(
+            "Qt: No display detected — NixOrb needs a graphical session."
         )
-    elif b == "ollama":
-        primary = OllamaBackend(settings.llm_model)
-    elif b == "local":
-        primary = LocalLLMBackend(settings.local_model_path, settings.llm_vram_mb)
-    else:
-        primary = HuggingFaceBackend(
-            settings.llm_model, settings.hf_token,
-            settings.llm_vram_mb, settings.llm_max_new_tokens,
-        )
-    if settings.offline_fallback_enabled and settings.fallback_model_path:
-        fallback = LocalLLMBackend(settings.fallback_model_path, 2048)
-        return OfflineFallbackManager(primary, fallback)
-    return primary
 
 
 async def _async_main(settings, app) -> None:
-    from nixorb.core.aur_checker import check_dependencies
+    """Main async orchestrator — initializes all components."""
     from nixorb.core.event_bus import Event, bus
     from nixorb.core.vram_manager import vram
     from nixorb.utils.logger import setup_logging
@@ -109,143 +98,152 @@ async def _async_main(settings, app) -> None:
     setup_logging(log_to_file=True)
 
     await bus.start()
-    log.info("NixOrb %s starting", settings.__class__.__module__)
+    log.info("NixOrb %s starting", __import__("nixorb").__version__)
 
-    # Prime qasync's cross-thread wakeup mechanism *from the Qt thread*
-    # before anything spawns a raw (non-QThread) background thread —
-    # HotkeyManager's pynput listener and WakeWordDetector's audio callback
-    # both eventually call bus.emit_sync(), which reaches into this same
-    # loop via asyncio.run_coroutine_threadsafe() from their own threads.
-    # If that loop's Qt-side wakeup notifier/timer is instead lazily
-    # created on first use, and that first use happens to be one of those
-    # background threads, Qt logs:
-    #   QSocketNotifier: Can only be used with threads started with QThread
-    #   QObject::startTimer: Timers can only be used with threads started with QThread
-    # and the event loop can be left in a broken state (no crash, no further
-    # logs — which is exactly what running `nixorb start` looks like when
-    # this fires early). A no-op call_soon_threadsafe() from the Qt thread
-    # itself forces any such lazy setup to happen safely, before it matters.
+    # Prime qasync cross-thread wakeup from Qt thread
+    # This prevents "QSocketNotifier: Can only be used with threads started with QThread"
     asyncio.get_running_loop().call_soon_threadsafe(lambda: None)
 
-    # Show Qt surfaces before dependency/model initialisation so packaged
-    # launches never look hung while models are being cached.
+    # ── Initialize UI ────────────────────────────────────────────── #
     from nixorb.ui.settings_window import SettingsWindow
-    SettingsWindow.init_settings(settings)
+    SettingsWindow.init_settings = lambda s: None  # type: ignore
 
     from nixorb.ui.tray_icon import NixOrbTray
     from PySide6.QtWidgets import QSystemTrayIcon
-    if not QSystemTrayIcon.isSystemTrayAvailable():
-        log.warning(
-            "System tray is not available on this desktop/session — the "
-            "tray icon will be constructed but may never become visible. "
-            "This is a desktop/compositor limitation, not a nixorb bug."
-        )
-    tray = NixOrbTray(settings, app)
-    tray.show()
+
+    if QSystemTrayIcon.isSystemTrayAvailable():
+        tray = NixOrbTray(settings, app)
+        tray.show()
+        log.info("Tray: system tray icon active")
+    else:
+        log.warning("Tray: system tray not available")
 
     from nixorb.ui.orb_window import OrbWindow
     orb = OrbWindow(settings, app)
     orb.show()
-    orb._log_visibility_state()
+    orb.log_visibility()
 
+    # ── Initialize core services ─────────────────────────────────── #
     await vram.start_monitor(poll_interval=6.0)
 
-    for pkg in check_dependencies():
-        await bus.emit(
-            Event.LOG,
-            data={"level": "warning", "msg": f"⚠  Missing package: {pkg}"},
-            source="startup",
-        )
-
+    # Memory
     from nixorb.memory.vector_store import VectorMemory
     memory = VectorMemory(settings.memory_dir)
 
+    # ASR (Whisper)
     from nixorb.asr.whisper_engine import WhisperEngine
     asr = WhisperEngine(settings)
 
-    from nixorb.vision.screen_capture import ScreenCapture
-    screen = ScreenCapture()
+    # LLM (Ollama — local only)
+    from nixorb.llm.ollama_backend import OllamaBackend
+    llm = OllamaBackend(settings)
 
-    llm = _build_llm(settings)
+    # Check Ollama health
+    health = await llm.health_check()
+    if health["ok"]:
+        log.info("LLM: Ollama ready with model '%s'", settings.llm_model)
+    else:
+        log.warning("LLM: %s", health.get("error", "Unknown error"))
+        log.info("LLM: Run 'ollama pull %s' to download the model", settings.llm_model)
 
-    from nixorb.tts.tts_factory import build_tts
-    tts = build_tts(settings)
+    # TTS (Piper)
+    from nixorb.tts.piper_tts import PiperTTS
+    tts = PiperTTS(settings)
 
+    # Action executor
     from nixorb.action.executor import ActionExecutor
     executor = ActionExecutor(settings)
 
-    # Wire up the shell-command confirmation dialog. Without this, nothing
-    # ever listens for Event.ACTION_REQUESTED, so ActionExecutor's
-    # confirmation wait always times out after 30s and silently denies
-    # *every* command — no dialog, no error, no execution.
+    # Confirmation dialog handler
     from nixorb.ui.confirm_dialog import register_confirmation_handler
-    register_confirmation_handler(bus, Event.ACTION_REQUESTED)
+    register_confirmation_handler()
 
+    # Plugin loader
     from nixorb.plugins.loader import PluginLoader
     plugin_loader = PluginLoader(settings.plugin_dir)
-    plugin_loader.load_all()
-    names = plugin_loader.plugin_names()
-    log.info("Plugins loaded: %s", ", ".join(names) if names else "none")
+    if settings.plugins_enabled:
+        plugin_loader.load_all()
 
+    # ── Preload ASR model ────────────────────────────────────────── #
     async def _preload_asr() -> None:
         try:
             await asr.preload()
-            await bus.emit(Event.LOG, data={"level": "info", "msg": "✅ ASR model ready"}, source="startup")
+            await bus.emit(
+                Event.LOG,
+                data={"level": "info", "msg": "✅ ASR model ready"},
+                source="startup",
+            )
         except Exception as exc:
-            log.warning("ASR model preload failed: %s", exc)
-            await bus.emit(Event.LOG, data={"level": "warning", "msg": f"⚠ ASR preload failed: {exc}"}, source="startup")
+            log.warning("ASR preload failed: %s", exc)
+            await bus.emit(
+                Event.LOG,
+                data={"level": "warning", "msg": f"⚠ ASR preload failed: {exc}"},
+                source="startup",
+            )
 
-    asyncio.create_task(_preload_asr(), name="nixorb-asr-preload")
+    asyncio.create_task(_preload_asr(), name="asr-preload")
 
-    # ── Hotkey (after bus._loop confirmed set) ────────────────────── #
+    # ── Hotkey manager ───────────────────────────────────────────── #
     from nixorb.ui.hotkey import HotkeyManager
     HotkeyManager(settings).start()
 
-    # ── Wake word ─────────────────────────────────────────────────── #
+    # ── Wake word detector ───────────────────────────────────────── #
+    wake_word = None
     if settings.wake_word_enabled:
         from nixorb.asr.wake_word import WakeWordDetector
-        asyncio.create_task(
-            WakeWordDetector(settings).run_forever(), name="wake-word"
-        )
+        wake_word = WakeWordDetector(settings)
+        asyncio.create_task(wake_word.run_forever(), name="wake-word")
 
-    _mic_muted = False
+    # ── Mic mute state ───────────────────────────────────────────── #
+    mic_muted = False
 
     async def _on_mic_muted(payload) -> None:
-        nonlocal _mic_muted
-        _mic_muted = bool((payload.data or {}).get("muted", False))
-        log.info("Mic %s", "muted" if _mic_muted else "unmuted")
+        nonlocal mic_muted
+        mic_muted = bool((payload.data or {}).get("muted", False))
+        log.info("Mic %s", "muted" if mic_muted else "unmuted")
 
     bus.subscribe(Event.MIC_MUTED, _on_mic_muted)
 
-    conversation: list[dict[str, Any]] = [
-        {"role": "system", "content": SYSTEM_PROMPT}
+    # ── Main conversation handler ────────────────────────────────── #
+    conversation: list[dict[str, str]] = [
+        {"role": "system", "content": settings.llm_system_prompt}
     ]
 
-    async def _handle_turn(_payload) -> None:
-        nonlocal _mic_muted
-        if _mic_muted:
+    async def _handle_turn(payload) -> None:
+        """Handle a single conversation turn."""
+        nonlocal mic_muted
+
+        if mic_muted:
             log.debug("Mic muted — ignoring trigger")
             return
 
         await bus.emit(Event.ORB_LISTENING, source="main")
-        log.info("Listening…")
+        log.info("🎙 Listening…")
 
+        # Record and transcribe
         transcript = await asr.record_and_transcribe()
         if not transcript:
             log.info("No speech detected")
             await bus.emit(Event.ORB_IDLE, source="main")
             return
 
-        log.info("Transcript: %s", transcript)
+        log.info("📝 Transcript: %s", transcript)
         await bus.emit(
             Event.LOG,
             data={"level": "info", "msg": f"🎙 You: {transcript}"},
             source="main",
         )
 
-        mem_ctx  = memory.build_context_block(transcript)
-        user_msg = (mem_ctx + transcript) if mem_ctx else transcript
+        # Build user message with context
+        user_msg = transcript
 
+        # Add memory context
+        if settings.memory_enabled:
+            mem_ctx = memory.build_context_block(transcript)
+            if mem_ctx:
+                user_msg = mem_ctx + transcript
+
+        # Check clipboard
         if settings.clipboard_enabled and "clipboard" in transcript.lower():
             from nixorb.action.clipboard import read_clipboard
             clip = await read_clipboard()
@@ -253,77 +251,95 @@ async def _async_main(settings, app) -> None:
                 user_msg += f"\n\n[Clipboard]:\n{clip}"
                 log.debug("Clipboard injected (%d chars)", len(clip))
 
+        # Check web search
         if settings.web_search_enabled and _wants_web(transcript):
-            from nixorb.utils.web_search import search_formatted
-            log.info("Web search: %s", transcript[:60])
-            web_ctx = await search_formatted(transcript, settings.web_search_max_results)
-            user_msg += f"\n\n{web_ctx}"
+            try:
+                from nixorb.utils.web_search import search_formatted
+                log.info("🔍 Web search: %s", transcript[:60])
+                web_ctx = await search_formatted(transcript, settings.web_search_max_results)
+                user_msg += f"\n\n{web_ctx}"
+            except Exception as exc:
+                log.warning("Web search failed: %s", exc)
 
+        # Check screen capture
         if settings.screen_capture_enabled and _wants_screen(transcript):
             await bus.emit(Event.SCREEN_CAPTURE_REQ, source="main")
-            log.info("Screen capture requested")
-            if settings.use_vlm:
-                desc = await screen.describe(llm, question=transcript)
-            else:
-                desc = await screen.describe_cogflorence(
-                    settings.vision_model, settings.hf_token
-                )
-            user_msg += f"\n\n[Screen]: {desc}"
-            await bus.emit(Event.SCREEN_CAPTURE_DONE, source="main")
+            try:
+                from nixorb.vision.screen_capture import ScreenCapture
+                screen = ScreenCapture()
+                desc = await screen.describe()
+                user_msg += f"\n\n[Screen]: {desc}"
+                await bus.emit(Event.SCREEN_CAPTURE_DONE, source="main")
+            except Exception as exc:
+                log.warning("Screen capture failed: %s", exc)
+                await bus.emit(Event.SCREEN_CAPTURE_DONE, source="main")
 
+        # Add to conversation
         conversation.append({"role": "user", "content": user_msg})
-        await vram.evict("whisper")
-        await bus.emit(Event.ORB_THINKING, source="main")
-        log.info("Querying LLM: %s", settings.llm_model)
 
-        full: list[str] = []
+        # Unload Whisper to free VRAM for LLM
+        await asr.unload()
+        await bus.emit(Event.ORB_THINKING, source="main")
+        log.info("🤔 Querying LLM: %s", settings.llm_model)
+
+        # Stream LLM response
+        full_response: list[str] = []
         try:
             tools = plugin_loader.get_tool_definitions() or None
             async for chunk in llm.stream(conversation, tools=tools):
-                full.append(chunk)
+                full_response.append(chunk)
+
+            response = "".join(full_response)
+
         except Exception as exc:
             log.error("LLM error: %s", exc)
             await bus.emit(Event.LLM_ERROR, data={"error": str(exc)}, source="main")
             await bus.emit(Event.ORB_ERROR, source="main")
-            await bus.emit(
-                Event.LOG,
-                data={"level": "error", "msg": f"❌ LLM error: {exc}"},
-                source="main",
-            )
             await asyncio.sleep(2)
             await bus.emit(Event.ORB_IDLE, source="main")
             return
 
-        response = "".join(full)
+        # Add response to conversation
         conversation.append({"role": "assistant", "content": response})
-        log.info("Response (%d chars): %s", len(response), response[:100])
+        log.info("🤖 Response (%d chars): %s", len(response), response[:100])
         await bus.emit(
             Event.LOG,
             data={"level": "info", "msg": f"🤖 NixOrb: {response[:200]}"},
             source="main",
         )
 
-        memory.store(
-            f"User: {transcript}\nAssistant: {response[:600]}",
-            metadata={"type": "conversation"},
-        )
-
-        results = await executor.handle_llm_output(response)
-        if results:
-            result_text = "\n\n".join(str(r) for r in results)
-            conversation.append(
-                {"role": "user", "content": f"<RESULT>\n{result_text}\n</RESULT>"}
+        # Store in memory
+        if settings.memory_enabled:
+            memory.store(
+                f"User: {transcript}\nAssistant: {response[:600]}",
+                metadata={"type": "conversation"},
             )
-            if any(r.stdout for r in results):
-                followup: list[str] = []
-                with contextlib.suppress(Exception):
-                    async for chunk in llm.stream(conversation):
-                        followup.append(chunk)
-                if followup:
-                    ftext = "".join(followup)
-                    conversation.append({"role": "assistant", "content": ftext})
-                    response = ftext
 
+        # Execute any actions
+        action_results = await executor.handle_llm_output(response)
+        if action_results:
+            result_texts = []
+            for r in action_results:
+                if r.stdout:
+                    result_texts.append(r.stdout)
+            if result_texts:
+                result_msg = "\n\n".join(result_texts)
+                conversation.append(
+                    {"role": "user", "content": f"<RESULT>\n{result_msg}\n</RESULT>"}
+                )
+                # Get follow-up response
+                followup_chunks: list[str] = []
+                try:
+                    async for chunk in llm.stream(conversation):
+                        followup_chunks.append(chunk)
+                    if followup_chunks:
+                        followup = "".join(followup_chunks)
+                        conversation.append({"role": "assistant", "content": followup})
+                        response = followup
+                except Exception as exc:
+                    log.warning("Follow-up LLM call failed: %s", exc)
+
+        # Copy code blocks to clipboard
         if settings.clipboard_enabled:
             from nixorb.action.clipboard import write_clipboard
             code_blocks = re.findall(r"```(?:\w+)?\n(.*?)```", response, re.DOTALL)
@@ -331,33 +347,41 @@ async def _async_main(settings, app) -> None:
                 await write_clipboard(code_blocks[-1].strip())
                 log.debug("Copied code block to clipboard")
 
+        # Speak response
         await bus.emit(Event.ORB_SPEAKING, source="main")
-        speech    = _strip_actions(response)
-        sentences = re.split(r"(?<=[.!?])\s+", speech)
-        tts_text  = " ".join(sentences[:6]) if len(sentences) > 6 else speech
+        speech_text = _strip_actions(response)
+        # Limit to first 6 sentences for TTS
+        sentences = re.split(r"(?<=[.!?])\s+", speech_text)
+        tts_text = " ".join(sentences[:6]) if len(sentences) > 6 else speech_text
+
         if tts_text:
-            log.info("Speaking: %s", tts_text[:80])
+            log.info("🔊 Speaking: %s", tts_text[:80])
             await tts.speak(tts_text)
 
         await bus.emit(Event.ORB_IDLE, source="main")
 
+        # Trim conversation history
         if len(conversation) > 22:
             conversation[1:] = conversation[-20:]
 
-    bus.subscribe(Event.HOTKEY_TRIGGERED,   _handle_turn, priority=2)
+    # Subscribe to triggers
+    bus.subscribe(Event.HOTKEY_TRIGGERED, _handle_turn, priority=2)
     bus.subscribe(Event.WAKE_WORD_DETECTED, _handle_turn, priority=2)
+    bus.subscribe(Event.ORB_CLICKED, _handle_turn, priority=2)
 
+    # Log handler
     async def _log_to_python(payload) -> None:
-        data  = payload.data or {}
+        data = payload.data or {}
         level = data.get("level", "info")
-        msg   = data.get("msg", "")
+        msg = data.get("msg", "")
         getattr(
-            log, level if level in ("debug", "info", "warning", "error") else "info"
+            log,
+            level if level in ("debug", "info", "warning", "error") else "info",
         )("[bus] %s", msg)
 
     bus.subscribe(Event.LOG, _log_to_python)
 
-    # ── Shutdown via app.aboutToQuit (no signal handlers = no QSocketNotifier) ─ #
+    # ── Shutdown handling ────────────────────────────────────────── #
     stop_event = asyncio.Event()
 
     def _on_qt_quit() -> None:
@@ -366,117 +390,51 @@ async def _async_main(settings, app) -> None:
 
     app.aboutToQuit.connect(_on_qt_quit)
 
-    async def _on_bus_shutdown(_payload) -> None:
+    async def _on_shutdown(_payload) -> None:
         stop_event.set()
 
-    bus.subscribe(Event.SHUTDOWN, _on_bus_shutdown)
+    bus.subscribe(Event.SHUTDOWN, _on_shutdown)
 
-    from nixorb import __version__
-    log.info("NixOrb %s ready — hotkey: %s  LLM: %s", __version__, settings.hotkey, settings.llm_model)
+    # ── Ready ────────────────────────────────────────────────────── #
+    log.info(
+        "✅ NixOrb %s ready — hotkey: %s | LLM: %s | model: %s",
+        __import__("nixorb").__version__,
+        settings.hotkey,
+        settings.llm_backend,
+        settings.llm_model,
+    )
     await bus.emit(
         Event.LOG,
-        data={"level": "success",
-              "msg": f"✅ NixOrb {__version__} ready | hotkey: {settings.hotkey} | LLM: {settings.llm_model}"},
+        data={
+            "level": "success",
+            "msg": (
+                f"✅ NixOrb ready | hotkey: {settings.hotkey} "
+                f"| LLM: {settings.llm_model}"
+            ),
+        },
         source="startup",
     )
 
+    # Wait for shutdown
     await stop_event.wait()
     log.info("Shutting down…")
+
+    # Cleanup
+    if wake_word:
+        wake_word.stop()
+    await asr.unload()
+    await llm.close()
     await vram.stop()
     await bus.stop()
 
 
-def _disable_crashing_accessibility_bridge() -> None:
-    """
-    Prevent a confirmed SIGSEGV: on KDE Plasma sessions (which register
-    AT-SPI accessibility support over DBus by default), Qt auto-constructs
-    a QSpiAccessibleBridge the moment QGuiApplication::exec() is entered.
-    That construction crashes inside PySide6's own
-    PySide::SignalManager::retrieveMetaObject — confirmed via a real
-    coredumpctl/gdb backtrace, not a guess:
-
-        QGuiApplication::exec()
-        -> QAccessible::setRootObject()
-        -> QXcbIntegration::accessibility()
-        -> QSpiAccessibleBridge::QSpiAccessibleBridge()
-        -> ... -> PySide::SignalManager::retrieveMetaObject()
-        -> crash inside CPython's own allocator/unicode decoding
-
-    QT_ACCESSIBILITY is Qt's own official switch for this subsystem
-    (normally opt-in via this variable, but KDE's automatic AT-SPI
-    DBus registration can trigger it regardless of whether the app asked
-    for it). Setting it to "0" stops Qt from ever constructing the bridge,
-    which avoids the crash entirely. This only disables the AT-SPI/screen
-    reader integration bridge — it has no effect on the rest of the app.
-    We respect an explicit override if the user has already set this
-    themselves (e.g. because they rely on a screen reader).
-    """
-    os.environ.setdefault("QT_ACCESSIBILITY", "0")
-
-
-def _select_qt_platform() -> None:
-    """
-    Pick a Qt platform plugin that will actually initialise on this system,
-    *before* QApplication is constructed.
-
-    Why this matters: PySide6's pip wheel bundles its own copy of Qt,
-    which normally does NOT include a working "wayland" platform plugin
-    (only xcb/eglfs/minimal/offscreen). On a KDE Plasma Wayland session
-    with no DISPLAY set, Qt falls through every candidate platform, finds
-    none of them usable, and — because this happens inside libqxcb/libEGL
-    at the C++ level, not in Python — throws up its own native
-    "This application failed to start because no Qt platform plugin
-    could be initialized. Reinstalling the application may fix this
-    problem." message box, with nothing printed to the Python side and
-    therefore nothing in NixOrb's logs. That's the "random Qt popup with
-    no errors" symptom.
-
-    KDE Plasma runs XWayland by default, so forcing the "xcb" backend
-    (which talks to XWayland) is the most reliable fix without needing a
-    Qt build that ships a real Wayland plugin. We only do this if the
-    user hasn't already forced a platform themselves and DISPLAY isn't
-    already usable.
-    """
-    if os.environ.get("QT_QPA_PLATFORM"):
-        return  # user/packager already decided — don't override
-
-    session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
-    has_wayland  = bool(os.environ.get("WAYLAND_DISPLAY"))
-    has_x11      = bool(os.environ.get("DISPLAY"))
-
-    if session_type == "wayland" or has_wayland:
-        if has_x11:
-            # XWayland is available — this is what actually works reliably
-            # with pip-installed PySide6 today.
-            os.environ["QT_QPA_PLATFORM"] = "xcb"
-            log.info("Qt: Wayland session detected, using xcb via XWayland")
-        else:
-            # No XWayland either — try native wayland, but don't blow up if
-            # the plugin is missing; log clearly instead of letting Qt pop
-            # up its native error dialog.
-            os.environ.setdefault("QT_QPA_PLATFORM", "wayland")
-            log.warning(
-                "Qt: Wayland session with no DISPLAY (no XWayland) — "
-                "attempting native 'wayland' Qt platform plugin. If NixOrb "
-                "doesn't start, install qt6-wayland and/or enable XWayland, "
-                "then retry, or set QT_QPA_PLATFORM=xcb manually."
-            )
-    elif not has_x11:
-        # Neither Wayland nor X11 detected at all (e.g. launched from a
-        # systemd unit without a display forwarded) — fail loudly in the
-        # log instead of silently trying to open a window with no display.
-        log.error(
-            "Qt: no DISPLAY and no WAYLAND_DISPLAY detected — NixOrb needs "
-            "a graphical session. If you're launching it from systemd or a "
-            "script, make sure DISPLAY/WAYLAND_DISPLAY are inherited."
-        )
-
-
 def main() -> None:
+    """Entry point — initializes Qt and starts the async loop."""
     import qasync
     from PySide6.QtWidgets import QApplication
 
     from nixorb.settings import Settings
+
     settings = Settings.load()
 
     logging.basicConfig(
@@ -485,17 +443,19 @@ def main() -> None:
         datefmt="%H:%M:%S",
     )
 
+    # Prevent Qt crashes on KDE
     _disable_crashing_accessibility_bridge()
     _select_qt_platform()
 
+    # Create Qt application
     app = QApplication.instance() or QApplication(sys.argv)
-    from nixorb import __version__
     app.setApplicationName("NixOrb")
-    app.setApplicationVersion(__version__)
+    app.setApplicationVersion(__import__("nixorb").__version__)
     app.setOrganizationName("NixOrb")
-    cast(Any, app).setQuitOnLastWindowClosed(False)
+    setattr(app, "_quit_on_last_window_closed", False)
+    app.setQuitOnLastWindowClosed(False)
 
-    # QEventLoop from qasync — wraps Qt event loop with asyncio
+    # qasync: integrate asyncio with Qt event loop
     loop = qasync.QEventLoop(app)
     asyncio.set_event_loop(loop)
 
