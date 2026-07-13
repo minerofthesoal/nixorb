@@ -1,207 +1,241 @@
-"""
-nixorb/asr/whisper_engine.py
+"""NixOrb Whisper ASR engine — speech-to-text using faster-whisper.
 
-faster-whisper ASR with non-blocking recording and VRAM paging.
+Records audio from the microphone, detects voice activity, and transcribes
+using Whisper Large v3 optimized for GTX 1080 (INT8 quantization).
 """
 from __future__ import annotations
 
 import asyncio
-import inspect
+import io
 import logging
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import numpy as np
 import sounddevice as sd
-import torch
+import soundfile as sf
 
-from nixorb.core.event_bus import Event, EventBus
-from nixorb.core.vram_manager import ModelPriority, vram
+from nixorb.core.event_bus import Event, bus
 
 if TYPE_CHECKING:
     from nixorb.settings import Settings
 
 log = logging.getLogger(__name__)
 
-SAMPLE_RATE = 16_000
+# Audio recording parameters
+SAMPLE_RATE = 16000
 CHANNELS = 1
-DTYPE = "float32"
-CHUNK_FRAMES = 1_024
-SILENCE_DB = -38.0
-SILENCE_SECS = 1.2
-INITIAL_LISTEN_S = 8.0
-MAX_RECORD_S = 30.0
-
-
-def _preferred_device() -> str:
-    return "cuda" if torch.cuda.is_available() else "cpu"
-
-
-def _load_whisper():
-    from faster_whisper import WhisperModel
-
-    from nixorb.settings import Settings
-
-    settings = Settings.load()
-    model_name = settings.asr_model or "large-v3"
-    device = _preferred_device()
-    compute_type = "int8_float16" if device == "cuda" else "int8"
-    log.info("Loading faster-whisper %s on %s (%s)", model_name, device, compute_type)
-    try:
-        model = WhisperModel(
-            model_name,
-            device=device,
-            compute_type=compute_type,
-            cpu_threads=4,
-            num_workers=2,
-        )
-    except Exception:
-        if device == "cuda":
-            log.exception("CUDA Whisper load failed; retrying on CPU")
-            model = WhisperModel(
-                model_name,
-                device="cpu",
-                compute_type="int8",
-                cpu_threads=4,
-                num_workers=2,
-            )
-        else:
-            raise
-    log.info("faster-whisper model ready: %s", model_name)
-    return model
-
-
-def _unload_whisper(model) -> None:
-    del model
-
-
-vram.register(
-    name="whisper",
-    vram_mb=2_100,
-    priority=ModelPriority.LOW,
-    load_fn=_load_whisper,
-    unload_fn=_unload_whisper,
-)
+DTYPE = np.float32
+CHUNK_DURATION = 0.5  # seconds per audio chunk
+SILENCE_THRESHOLD = 0.015
+SILENCE_TIMEOUT = 2.0  # seconds of silence before stopping
+MAX_RECORDING_DURATION = 30.0  # maximum recording length
+VAD_WINDOW_MS = 30  # voice activity detection window
 
 
 class WhisperEngine:
+    """ASR engine using faster-whisper for local speech-to-text."""
+
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
+        self._model = None
+        self._model_name = settings.asr_model
+        self._language = settings.asr_language or "en"
+        self._mic_index = settings.microphone_index
+        self._recording = False
+        self._audio_buffer: list[np.ndarray] = []
+
+    @property
+    def is_loaded(self) -> bool:
+        return self._model is not None
+
+    def _load_model(self):
+        """Load the faster-whisper model (runs in executor)."""
+        try:
+            from faster_whisper import WhisperModel
+
+            # Use INT8 for GTX 1080 — ~2.1 GB VRAM
+            compute_type = "int8_float16"
+            device = "cuda"
+
+            log.info("ASR: loading Whisper %s (%s, %s)", self._model_name, device, compute_type)
+            model = WhisperModel(
+                self._model_name,
+                device=device,
+                compute_type=compute_type,
+                cpu_threads=4,
+            )
+            log.info("ASR: Whisper model loaded successfully")
+            return model
+        except Exception as exc:
+            log.error("ASR: failed to load Whisper model: %s", exc)
+            raise
+
+    def _unload_model(self, model) -> None:
+        """Unload the model and free VRAM."""
+        del model
+        import gc
+
+        gc.collect()
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass
+        log.info("ASR: Whisper model unloaded")
 
     async def preload(self) -> None:
-        """Download/load the configured ASR model without recording."""
-        async with await self._whisper_lease():
+        """Preload the Whisper model into VRAM."""
+        if self._model is not None:
             return
-
-    async def record_and_transcribe(self) -> str | None:
-        await EventBus().emit(Event.RECORDING_START, source="whisper")
         loop = asyncio.get_running_loop()
-        audio = await loop.run_in_executor(None, self._record_blocking)
-        await EventBus().emit(Event.RECORDING_STOP, source="whisper")
+        self._model = await loop.run_in_executor(None, self._load_model)
+        await bus.emit(Event.ASR_READY, source="WhisperEngine")
 
-        if audio is None or len(audio) < int(SAMPLE_RATE * 0.3):
-            log.info("No usable microphone audio captured")
-            return None
-        return await self._transcribe_async(audio)
+    async def unload(self) -> None:
+        """Unload the model from VRAM."""
+        if self._model is not None:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, self._unload_model, self._model)
+            self._model = None
 
-    def _emit_mic_level(self, level: float, rms_db: float) -> None:
-        try:
-            EventBus().emit_sync(
-                Event.MIC_LEVEL,
-                data={"level": max(0.0, min(1.0, level)), "rms_db": rms_db},
-                source="whisper",
-                priority=3,
-            )
-        except Exception:
-            log.debug("Unable to emit microphone level", exc_info=True)
+    def _record_audio_sync(self) -> np.ndarray | None:
+        """Synchronous audio recording with VAD (runs in thread)."""
+        log.info("ASR: starting recording…")
+        self._recording = True
+        self._audio_buffer = []
 
-    def _record_blocking(self) -> np.ndarray | None:
-        chunks: list[np.ndarray] = []
-        speech_started = False
-        silence_start: float | None = None
-        start = time.monotonic()
-        device = self._settings.microphone_index
+        chunk_samples = int(SAMPLE_RATE * CHUNK_DURATION)
+        silence_samples = int(SAMPLE_RATE * SILENCE_TIMEOUT)
+        max_samples = int(SAMPLE_RATE * MAX_RECORDING_DURATION)
+
+        silence_counter = 0
+        total_samples = 0
+        has_speech = False
 
         try:
             with sd.InputStream(
                 samplerate=SAMPLE_RATE,
                 channels=CHANNELS,
                 dtype=DTYPE,
-                blocksize=CHUNK_FRAMES,
-                device=device,
+                device=self._mic_index,
+                blocksize=chunk_samples,
             ) as stream:
-                log.info("Recording started (device=%s)", device)
-                while True:
-                    chunk, overflowed = stream.read(CHUNK_FRAMES)
-                    if overflowed:
-                        log.warning("Microphone input overflowed")
-                    chunk = chunk.copy()
+                while self._recording and total_samples < max_samples:
+                    chunk, _ = stream.read(chunk_samples)
+                    chunk = chunk.flatten()
+                    self._audio_buffer.append(chunk)
+                    total_samples += len(chunk)
 
-                    rms = float(np.sqrt(np.mean(chunk**2)) + 1e-10)
-                    rms_db = 20.0 * np.log10(rms)
-                    level = min(1.0, max(0.0, (rms_db - SILENCE_DB) / 38.0))
-                    self._emit_mic_level(level, rms_db)
-                    elapsed = time.monotonic() - start
+                    # Voice activity detection
+                    rms = np.sqrt(np.mean(chunk**2))
+                    if rms > SILENCE_THRESHOLD:
+                        has_speech = True
+                        silence_counter = 0
+                    elif has_speech:
+                        silence_counter += len(chunk)
 
-                    if rms_db > SILENCE_DB:
-                        speech_started = True
-                        silence_start = None
-                        chunks.append(chunk)
-                    elif speech_started:
-                        chunks.append(chunk)
-                        if silence_start is None:
-                            silence_start = time.monotonic()
-                        elif (time.monotonic() - silence_start) >= SILENCE_SECS:
-                            log.info("End of speech detected (%.1f s)", elapsed)
-                            break
-                    elif elapsed >= INITIAL_LISTEN_S:
-                        log.info("No microphone activity detected within %.1f s", INITIAL_LISTEN_S)
+                    # Emit mic level for UI visualization
+                    level = min(1.0, rms / SILENCE_THRESHOLD)
+                    bus.emit_sync(
+                        Event.MIC_LEVEL,
+                        data={"level": float(level)},
+                        source="WhisperEngine",
+                    )
+
+                    # Stop on prolonged silence after speech
+                    if has_speech and silence_counter >= silence_samples:
+                        log.info("ASR: silence detected, stopping recording")
                         break
 
-                    if elapsed >= MAX_RECORD_S:
-                        log.warning("Max recording duration reached")
-                        break
-        except sd.PortAudioError as exc:
-            log.error("PortAudio error during recording: %s", exc)
+            if not has_speech:
+                log.info("ASR: no speech detected")
+                return None
+
+            audio = np.concatenate(self._audio_buffer)
+            log.info("ASR: recorded %.1fs of audio", len(audio) / SAMPLE_RATE)
+            return audio
+
+        except Exception as exc:
+            log.error("ASR: recording failed: %s", exc)
             return None
+        finally:
+            self._recording = False
 
-        if not chunks:
-            return None
-        return np.concatenate(chunks, axis=0).flatten()
+    def _transcribe_sync(self, audio: np.ndarray) -> str:
+        """Synchronous transcription (runs in thread)."""
+        if self._model is None:
+            raise RuntimeError("Whisper model not loaded")
 
-    async def _whisper_lease(self) -> Any:
-        """Return the Whisper VRAM lease, tolerating async test doubles."""
-        lease = vram.lease("whisper")
-        if inspect.isawaitable(lease):
-            lease = await lease
-        return lease
+        try:
+            # Convert float32 to int16 WAV in memory
+            wav_buffer = io.BytesIO()
+            sf.write(wav_buffer, audio, SAMPLE_RATE, format="WAV", subtype="PCM_16")
+            wav_buffer.seek(0)
 
-    async def _transcribe_async(self, audio: np.ndarray) -> str | None:
-        if audio is None or len(audio) == 0 or not np.any(audio):
-            return None
-
-        async with await self._whisper_lease() as model:
-            loop = asyncio.get_running_loop()
-            text = await loop.run_in_executor(None, self._transcribe_sync, model, audio)
-        if text:
-            await EventBus().emit(
-                Event.TRANSCRIPT_READY,
-                data={"text": text},
-                source="whisper",
-                priority=2,
+            segments, info = self._model.transcribe(
+                wav_buffer,
+                language=self._language,
+                beam_size=5,
+                best_of=5,
+                condition_on_previous_text=True,
             )
-            log.info("Transcript: %s", text[:120])
-        return text or None
 
-    def _transcribe_sync(self, model, audio: np.ndarray) -> str:
-        language = self._settings.asr_language or None
-        segments, _info = model.transcribe(
-            audio,
-            beam_size=5,
-            language=language,
-            vad_filter=True,
-            vad_parameters={"min_silence_duration_ms": 500, "speech_pad_ms": 200},
-            word_timestamps=False,
-            condition_on_previous_text=False,
-        )
-        return " ".join(seg.text.strip() for seg in segments).strip()
+            text = " ".join(segment.text for segment in segments).strip()
+            log.info(
+                "ASR: transcribed (lang=%s, prob=%.2f): %s",
+                info.language,
+                info.language_probability,
+                text[:100],
+            )
+            return text
+
+        except Exception as exc:
+            log.error("ASR: transcription failed: %s", exc)
+            raise
+
+    def stop_recording(self) -> None:
+        """Signal the recorder to stop."""
+        self._recording = False
+
+    async def record_and_transcribe(self) -> str | None:
+        """Record audio and return transcript. Full pipeline."""
+        # Ensure model is loaded
+        if self._model is None:
+            await self.preload()
+
+        await bus.emit(Event.RECORDING_START, source="WhisperEngine")
+
+        try:
+            # Record audio in thread
+            loop = asyncio.get_running_loop()
+            audio = await loop.run_in_executor(None, self._record_audio_sync)
+
+            if audio is None or len(audio) < SAMPLE_RATE * 0.3:
+                log.info("ASR: audio too short or empty")
+                return None
+
+            await bus.emit(Event.RECORDING_STOP, source="WhisperEngine")
+            await bus.emit(Event.ORB_THINKING, source="WhisperEngine")
+
+            # Transcribe in thread
+            text = await loop.run_in_executor(None, self._transcribe_sync, audio)
+
+            if text:
+                await bus.emit(
+                    Event.TRANSCRIPT_READY,
+                    data={"text": text},
+                    source="WhisperEngine",
+                )
+            return text
+
+        except Exception as exc:
+            log.error("ASR: record_and_transcribe failed: %s", exc)
+            await bus.emit(
+                Event.ASR_ERROR,
+                data={"error": str(exc)},
+                source="WhisperEngine",
+            )
+            return None
