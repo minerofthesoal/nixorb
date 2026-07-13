@@ -1,4 +1,8 @@
-"""nixorb/action/clipboard.py — Wayland clipboard integration."""
+"""NixOrb clipboard integration — read/write clipboard on Wayland.
+
+Uses wl-paste and wl-copy for Wayland clipboard integration.
+Falls back to xclip/xsel on X11.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -7,44 +11,66 @@ import shutil
 
 log = logging.getLogger(__name__)
 
-_HAS_WL_PASTE = bool(shutil.which("wl-paste"))
-_HAS_WL_COPY  = bool(shutil.which("wl-copy"))
+# Detect available clipboard tools
+_HAS_WL_COPY = shutil.which("wl-copy") is not None
+_HAS_WL_PASTE = shutil.which("wl-paste") is not None
+_HAS_XCLIP = shutil.which("xclip") is not None
 
 
 async def read_clipboard() -> str | None:
-    """Read current Wayland clipboard text content."""
-    if not _HAS_WL_PASTE:
-        log.warning("wl-paste not found — install wl-clipboard")
-        return None
+    """Read text from the clipboard."""
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "wl-paste", "--no-newline",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
-        return stdout.decode(errors="replace").strip() or None
+        if _HAS_WL_PASTE:
+            proc = await asyncio.create_subprocess_exec(
+                "wl-paste",
+                "--no-newline",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+            return stdout.decode("utf-8", errors="replace")
+
+        elif _HAS_XCLIP:
+            proc = await asyncio.create_subprocess_exec(
+                "xclip", "-selection", "clipboard", "-o",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+            return stdout.decode("utf-8", errors="replace")
+
+        else:
+            log.warning("Clipboard: no clipboard tool found (install wl-clipboard)")
+            return None
+
     except Exception as exc:
-        log.error("Clipboard read failed: %s", exc)
+        log.error("Clipboard: read error: %s", exc)
         return None
 
 
 async def write_clipboard(text: str) -> bool:
-    """Write *text* to the Wayland clipboard."""
-    if not _HAS_WL_COPY:
-        log.warning("wl-copy not found — install wl-clipboard")
-        return False
+    """Write text to the clipboard."""
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "wl-copy",
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await asyncio.wait_for(
-            proc.communicate(input=text.encode("utf-8")), timeout=5
-        )
-        return proc.returncode == 0
+        if _HAS_WL_COPY:
+            proc = await asyncio.create_subprocess_exec(
+                "wl-copy",
+                stdin=asyncio.subprocess.PIPE,
+            )
+            await proc.communicate(text.encode("utf-8"))
+            return proc.returncode == 0
+
+        elif _HAS_XCLIP:
+            proc = await asyncio.create_subprocess_exec(
+                "xclip", "-selection", "clipboard",
+                stdin=asyncio.subprocess.PIPE,
+            )
+            await proc.communicate(text.encode("utf-8"))
+            return proc.returncode == 0
+
+        else:
+            log.warning("Clipboard: no clipboard tool found")
+            return False
+
     except Exception as exc:
-        log.error("Clipboard write failed: %s", exc)
+        log.error("Clipboard: write error: %s", exc)
         return False

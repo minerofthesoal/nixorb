@@ -1,28 +1,36 @@
-# nixorb/requirements.txt
-# Install with: pip install -r requirements.txt
-# For CUDA 11.8: pip install torch --index-url https://download.pytorch.org/whl/cu118
+# NixOrb — Core dependencies
+# Install PyTorch with CUDA first:
+#   pip install torch==2.7.1+cu118 torchaudio==2.7.1+cu118 \
+#       --index-url https://download.pytorch.org/whl/cu118
 
+# Qt6 GUI
 PySide6>=6.7.0
 qasync>=0.27.1
+
+# ASR — Whisper
 faster-whisper>=1.0.3
-openai>=1.35.0
-huggingface-hub>=0.23.0
-transformers>=4.44.0
-accelerate>=0.33.0
-torch>=2.4.0
-chromadb>=0.5.3
-aiohttp>=3.9.5
+
+# Audio
 sounddevice>=0.4.7
 soundfile>=0.12.1
 numpy>=1.26.0
+
+# Networking
+aiohttp>=3.9.5
+
+# Config & data
 pydantic>=2.7.0
 pydantic-settings>=2.3.0
 tomli-w>=1.0.0
-typer>=0.12.3
-rich>=13.0.0
-cryptography>=42.0.0
-pygments>=2.18.0
-aiofiles>=23.2.1
+
+# CLI
+typer[all]>=0.12.3
+
+# Memory
+chromadb>=0.5.3
+
+# Input
 pynput>=1.7.6
-hypernix
-openwakeword>=0.4.0
+
+# Optional: wake word detection
+# openwakeword>=0.6.0

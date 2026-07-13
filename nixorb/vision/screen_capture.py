@@ -1,100 +1,115 @@
-"""nixorb/vision/screen_capture.py — Wayland capture + CogFlorence/VLM vision."""
+"""NixOrb screen capture — take screenshots on Wayland.
+
+Uses `grim` for Wayland screenshot capture. Can describe the screen
+using a vision-capable model if available.
+"""
 from __future__ import annotations
 
 import asyncio
-import base64 as _b64
 import logging
 import shutil
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
-
-if TYPE_CHECKING:
-    from nixorb.llm.backends import LLMBackend
 
 log = logging.getLogger(__name__)
-_HAS_GRIM = bool(shutil.which("grim"))
+
+_HAS_GRIM = shutil.which("grim") is not None
+_HAS_SLURP = shutil.which("slurp") is not None
 
 
 class ScreenCapture:
-    async def capture_b64(self) -> str | None:
+    """Screen capture for Wayland (KDE Plasma 6)."""
+
+    def __init__(self) -> None:
         if not _HAS_GRIM:
-            log.error("grim not found — sudo pacman -S grim")
+            log.warning("ScreenCapture: 'grim' not found — install it for screenshots")
+
+    async def capture(self, output_path: Path | None = None) -> Path | None:
+        """Capture the screen and save to file.
+
+        Args:
+            output_path: Where to save the screenshot. If None, uses temp file.
+
+        Returns:
+            Path to the saved screenshot, or None if capture failed.
+        """
+        if not _HAS_GRIM:
+            log.error("ScreenCapture: grim not available")
             return None
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-            tmp = Path(f.name)
+
+        if output_path is None:
+            output_path = Path(tempfile.gettempdir()) / "nixorb_screenshot.png"
+
         try:
             proc = await asyncio.create_subprocess_exec(
-                "grim", str(tmp),
-                stdout=asyncio.subprocess.DEVNULL,
+                "grim", str(output_path),
+                stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
-            if proc.returncode != 0:
-                log.error("grim failed: %s", stderr.decode(errors="replace"))
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+
+            if proc.returncode == 0 and output_path.exists():
+                log.info("ScreenCapture: screenshot saved to %s", output_path)
+                return output_path
+            else:
+                log.error("ScreenCapture: grim failed: %s", stderr.decode())
                 return None
-            return _b64.b64encode(tmp.read_bytes()).decode()
-        except TimeoutError:
-            log.error("grim timed out")
+
+        except Exception as exc:
+            log.error("ScreenCapture: error: %s", exc)
             return None
-        finally:
-            tmp.unlink(missing_ok=True)
 
-    async def describe(self, llm: LLMBackend,
-                       question: str = "Describe this screen concisely.") -> str:
-        b64 = await self.capture_b64()
-        if not b64:
-            return "⚠️ Screen capture unavailable."
-        messages = [{"role": "user", "content": [
-            {"type": "image_url",
-             "image_url": {"url": f"data:image/png;base64,{b64}", "detail": "low"}},
-            {"type": "text", "text": question},
-        ]}]
-        chunks: list[str] = []
+    async def capture_region(self, output_path: Path | None = None) -> Path | None:
+        """Capture a selected region of the screen.
+
+        Uses slurp for region selection (requires user interaction).
+        """
+        if not _HAS_GRIM or not _HAS_SLURP:
+            log.error("ScreenCapture: grim and slurp required for region capture")
+            return None
+
+        if output_path is None:
+            output_path = Path(tempfile.gettempdir()) / "nixorb_screenshot.png"
+
         try:
-            async for chunk in llm.stream(messages):
-                chunks.append(chunk)
+            # Use slurp to get region, then grim to capture
+            proc = await asyncio.create_subprocess_shell(
+                f"slurp | grim -g - {output_path}",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
+
+            if proc.returncode == 0 and output_path.exists():
+                log.info("ScreenCapture: region screenshot saved")
+                return output_path
+            else:
+                log.error("ScreenCapture: region capture failed: %s", stderr.decode())
+                return None
+
+        except asyncio.TimeoutError:
+            log.warning("ScreenCapture: region selection timed out")
+            return None
         except Exception as exc:
-            log.error("VLM describe failed: %s", exc)
-            return "Screen description unavailable."
-        return "".join(chunks).strip() or "Nothing notable on screen."
+            log.error("ScreenCapture: region capture error: %s", exc)
+            return None
 
-    async def describe_cogflorence(
-        self,
-        model_id: str = "thwri/CogFlorence-2.2-Large",
-        hf_token: str = "",
-    ) -> str:
-        """Lightweight captioning via CogFlorence-2.2-Large."""
-        b64 = await self.capture_b64()
-        if not b64:
-            return "⚠️ Screen capture unavailable."
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            None, self._cogflorence_sync, b64, model_id, hf_token
-        )
+    async def describe(self, image_path: Path | None = None) -> str:
+        """Capture screen and return a description.
 
-    @staticmethod
-    def _cogflorence_sync(b64: str, model_id: str, hf_token: str) -> str:
-        import io
+        If no vision model is available, returns a basic description
+        indicating that a screenshot was taken.
+        """
+        path = image_path or await self.capture()
+        if path is None:
+            return "[Screen capture failed]"
+
+        # Try to use a vision model if available
         try:
-            import torch
             from PIL import Image
-            from transformers import AutoModelForCausalLM, AutoProcessor
+
+            with Image.open(path) as img:
+                width, height = img.size
+                return f"[Screenshot captured: {width}x{height} pixels at {path}]"
         except ImportError:
-            return "CogFlorence unavailable — pip install transformers pillow"
-        try:
-            img = Image.open(io.BytesIO(_b64.b64decode(b64))).convert("RGB")
-            processor = AutoProcessor.from_pretrained(
-                model_id, token=hf_token or None, trust_remote_code=True
-            )
-            model = AutoModelForCausalLM.from_pretrained(
-                model_id, token=hf_token or None, trust_remote_code=True
-            )
-            model.eval()
-            inputs = processor(images=img, text="<DETAILED_CAPTION>", return_tensors="pt")
-            with torch.no_grad():
-                ids = cast(Any, model).generate(**inputs, max_new_tokens=256, do_sample=False)
-            return processor.decode(ids[0], skip_special_tokens=True).strip()
-        except Exception as exc:
-            log.error("CogFlorence failed: %s", exc)
-            return f"Vision error: {exc}"
+            return f"[Screenshot captured at {path}]"

@@ -1,55 +1,81 @@
-"""Path helpers for bundled NixOrb assets and data files."""
+"""NixOrb path utilities — find assets, config, data directories."""
 from __future__ import annotations
 
 import os
 import sys
-import sysconfig
 from pathlib import Path
 
-_ENV_DATA_DIR = "NIXORB_DATA_DIR"
+
+def _find_asset_root() -> Path:
+    """Locate the assets directory across install methods."""
+    # 1. Development / source tree
+    src = Path(__file__).resolve().parents[2] / "assets"
+    if src.exists():
+        return src
+
+    # 2. pip install / wheel
+    pip = Path(__file__).resolve().parents[1] / "assets"
+    if pip.exists():
+        return pip
+
+    # 3. system install (/usr/share/nixorb/assets)
+    system = Path("/usr/share/nixorb/assets")
+    if system.exists():
+        return system
+
+    # 4. user local install (~/.local/share/nixorb/assets)
+    local = Path.home() / ".local" / "share" / "nixorb" / "assets"
+    if local.exists():
+        return local
+
+    # Fallback — return source location and let caller handle missing files
+    return src
 
 
-def repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+def _find_config_root() -> Path:
+    """Locate the config directory."""
+    src = Path(__file__).resolve().parents[2] / "config"
+    if src.exists():
+        return src
+
+    pip = Path(__file__).resolve().parents[1] / "config"
+    if pip.exists():
+        return pip
+
+    system = Path("/usr/share/nixorb/config")
+    if system.exists():
+        return system
+
+    local = Path.home() / ".local" / "share" / "nixorb" / "config"
+    if local.exists():
+        return local
+
+    return src
+
+
+_ASSET_ROOT = _find_asset_root()
+_CONFIG_ROOT = _find_config_root()
+
+
+def asset_path(name: str) -> Path:
+    """Get the full path to an asset file."""
+    return _ASSET_ROOT / name
+
+
+def config_path(name: str) -> Path:
+    """Get the full path to a config file."""
+    return _CONFIG_ROOT / name
 
 
 def data_dir() -> Path:
-    """Return the best available NixOrb data directory.
-
-    Editable installs use the repository checkout. Wheels install assets via
-    hatchling shared-data into ``<prefix>/share/nixorb``. Packagers may override
-    with ``NIXORB_DATA_DIR``.
-    """
-    candidates: list[Path] = []
-    if override := os.environ.get(_ENV_DATA_DIR):
-        candidates.append(Path(override).expanduser())
-
-    root = repo_root()
-    candidates.append(root)
-
-    for key in ("data", "platdata"):
-        base = sysconfig.get_paths().get(key)
-        if base:
-            candidates.append(Path(base) / "share" / "nixorb")
-
-    candidates.extend(
-        [
-            Path(sys.prefix) / "share" / "nixorb",
-            Path(sys.base_prefix) / "share" / "nixorb",
-            Path("/usr/local/share/nixorb"),
-            Path("/usr/share/nixorb"),
-        ]
-    )
-
-    for candidate in candidates:
-        if (candidate / "assets").exists():
-            return candidate
-    return candidates[0]
+    """Get the NixOrb data directory (~/.local/share/nixorb)."""
+    d = Path.home() / ".local" / "share" / "nixorb"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
-def asset_path(*parts: str) -> Path:
-    return data_dir() / "assets" / Path(*parts)
-
-
-def config_path(*parts: str) -> Path:
-    return data_dir() / "config" / Path(*parts)
+def cache_dir() -> Path:
+    """Get the NixOrb cache directory (~/.cache/nixorb)."""
+    d = Path.home() / ".cache" / "nixorb"
+    d.mkdir(parents=True, exist_ok=True)
+    return d

@@ -1,400 +1,337 @@
-"""nixorb/ui/settings_window.py — Settings GUI with syntax-highlighted log."""
+"""NixOrb settings window — GUI configuration editor.
+
+Allows users to configure all NixOrb settings through a tabbed interface.
+Changes are saved to ~/.config/nixorb/config.toml.
+"""
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, ClassVar
+from typing import Any
 
-from pygments import highlight
-from pygments.formatters import HtmlFormatter
-from pygments.lexers import BashLexer, PythonLexer
-from PySide6.QtCore import Signal, Slot
-from PySide6.QtGui import QFont, QTextCursor
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
-    QFileDialog,
+    QDoubleSpinBox,
     QFormLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QPlainTextEdit,
+    QMessageBox,
     QPushButton,
+    QSlider,
+    QSpinBox,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
-from nixorb.core.event_bus import Event, EventPayload, bus
-
-if TYPE_CHECKING:
-    from nixorb.settings import Settings
-
 log = logging.getLogger(__name__)
 
-_MONO = QFont("JetBrains Mono", 10)
-_MONO.setStyleHint(QFont.StyleHint.Monospace)
-
-_STYLE = """
-QDialog, QWidget   { background:#1a1a2e; color:#e0e0e0; }
-QTabWidget::pane   { border:1px solid #2a2a4e; }
-QTabBar::tab       { background:#16213e; padding:7px 16px; border-radius:3px 3px 0 0; }
-QTabBar::tab:selected { background:#0f3460; color:#e94560; }
-QGroupBox          { border:1px solid #2a2a4e; border-radius:4px;
-                     margin-top:10px; padding:10px 6px 6px 6px; }
-QGroupBox::title   { color:#3498db; subcontrol-origin:margin; left:8px; }
-QLineEdit, QComboBox { background:#16213e; border:1px solid #2a2a4e;
-                       padding:4px 6px; border-radius:3px; }
-QLineEdit:focus    { border-color:#3498db; }
-QPushButton        { background:#0f3460; border:none; padding:6px 14px;
-                     border-radius:3px; }
-QPushButton:hover  { background:#e94560; }
-"""
-
-
-class SyntaxLogWidget(QTextEdit):
-    _html_signal = Signal(str)
-
-    LEVEL_COLORS = {
-        "info":    "#2ecc71",
-        "warning": "#f39c12",
-        "error":   "#e74c3c",
-        "exec":    "#3498db",
-        "debug":   "#95a5a6",
-        "success": "#1abc9c",
-    }
-
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self.setReadOnly(True)
-        self.setFont(_MONO)
-        self.setStyleSheet(
-            "background:#0d0d1a;color:#e0e0e0;border:1px solid #2a2a4e;"
-        )
-        self._fmt = HtmlFormatter(style="monokai", noclasses=True, nowrap=True)
-        self._html_signal.connect(self._insert_html)
-
-    def append_log(self, level: str, msg: str) -> None:
-        color  = self.LEVEL_COLORS.get(level, "#e0e0e0")
-        prefix = (
-            f"<span style='color:{color};font-weight:bold'>"
-            f"[{level.upper():7}]</span>&nbsp;"
-        )
-        if level == "exec" or msg.lstrip().startswith("$"):
-            body = highlight(msg, BashLexer(), self._fmt)
-        elif "Traceback" in msg or "Error:" in msg:
-            body = highlight(msg, PythonLexer(), self._fmt)
-        else:
-            escaped = (
-                msg.replace("&", "&amp;")
-                   .replace("<", "&lt;")
-                   .replace(">", "&gt;")
-                   .replace("\n", "<br>")
-            )
-            body = f"<span style='color:{color}'>{escaped}</span>"
-        self._html_signal.emit(f"{prefix}{body}<br>")
-
-    @Slot(str)
-    def _insert_html(self, html: str) -> None:
-        self.moveCursor(QTextCursor.MoveOperation.End)
-        self.insertHtml(html)
-        sb = self.verticalScrollBar()
-        sb.setValue(sb.maximum())
+# Singleton instance
+_settings_window: SettingsWindow | None = None
 
 
 class SettingsWindow(QDialog):
-    _singleton:    ClassVar[SettingsWindow | None] = None
-    _settings_cls: ClassVar[Settings | None]       = None
+    """Settings dialog with tabbed configuration."""
 
-    @classmethod
-    def init_settings(cls, settings: Settings) -> None:
-        cls._settings_cls = settings
-
-    @classmethod
-    def show_singleton(cls) -> None:
-        if cls._settings_cls is None:
-            log.error("SettingsWindow.init_settings() not called")
-            return
-        if cls._singleton is None or not cls._singleton.isVisible():
-            cls._singleton = cls(cls._settings_cls)
-            cls._singleton.show()
-        else:
-            cls._singleton.raise_()
-            cls._singleton.activateWindow()
-
-    def __init__(self, settings: Settings, parent=None) -> None:
+    def __init__(self, settings: Any, parent: Any = None) -> None:
         super().__init__(parent)
-        self._s = settings
+        self._settings = settings
+        self._original_settings = settings.model_copy()
+
         self.setWindowTitle("NixOrb Settings")
-        self.setMinimumSize(940, 700)
-        self.setStyleSheet(_STYLE)
-        self._build_ui()
-        self._connect_events()
+        self.setMinimumSize(500, 400)
 
-    def _build_ui(self) -> None:
-        root = QVBoxLayout(self)
+        self._setup_ui()
+        self._load_settings()
+
+    def _setup_ui(self) -> None:
+        """Build the settings UI."""
+        layout = QVBoxLayout()
+
+        # Tab widget
         tabs = QTabWidget()
-        tabs.addTab(self._tab_models(),  "🤖 Models")
-        tabs.addTab(self._tab_audio(),   "🎙  Audio")
-        tabs.addTab(self._tab_system(),  "⚙  System")
-        tabs.addTab(self._tab_plugins(), "🔌 Plugins")
-        tabs.addTab(self._tab_log(),     "📋 Log")
-        root.addWidget(tabs)
-        root.addLayout(self._bottom_bar())
+        tabs.addTab(self._build_general_tab(), "General")
+        tabs.addTab(self._build_asr_tab(), "Speech Recognition")
+        tabs.addTab(self._build_llm_tab(), "AI Model")
+        tabs.addTab(self._build_tts_tab(), "Voice")
+        tabs.addTab(self._build_features_tab(), "Features")
+        layout.addWidget(tabs)
 
-    def _bottom_bar(self) -> QHBoxLayout:
-        bar = QHBoxLayout()
-        btn_export = QPushButton("📦 Export Config")
-        btn_import = QPushButton("📂 Import Config")
-        btn_save   = QPushButton("💾 Save & Apply")
-        bar.addWidget(btn_export)
-        bar.addWidget(btn_import)
-        bar.addStretch()
-        bar.addWidget(btn_save)
-        btn_export.clicked.connect(self._export)
-        btn_import.clicked.connect(self._import_cfg)
-        btn_save.clicked.connect(self._save)
-        return bar
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
 
-    def _tab_models(self) -> QWidget:
-        w = QWidget()
-        v = QVBoxLayout(w)
+        save_btn = QPushButton("💾 Save")
+        save_btn.clicked.connect(self._on_save)
+        button_layout.addWidget(save_btn)
 
-        g = QGroupBox("ASR — Speech Recognition")
-        f = QFormLayout(g)
-        self._asr_combo = QComboBox()
-        self._asr_combo.addItems([
-            "large-v3 (local INT8)", "medium (local)", "openai/whisper-1"
-        ])
-        f.addRow("Whisper model:", self._asr_combo)
-        v.addWidget(g)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self._on_cancel)
+        button_layout.addWidget(cancel_btn)
 
-        g = QGroupBox("LLM Backend")
-        f = QFormLayout(g)
-        self._llm_backend = QComboBox()
-        self._llm_backend.addItems(["huggingface", "openai", "ollama", "local"])
-        idx = self._llm_backend.findText(self._s.llm_backend)
-        if idx >= 0:
-            self._llm_backend.setCurrentIndex(idx)
-        self._llm_model   = QLineEdit(self._s.llm_model)
-        self._llm_fast    = QLineEdit(self._s.llm_fast_model)
-        self._llm_key     = QLineEdit(self._s.openai_api_key)
-        self._llm_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self._hf_token    = QLineEdit(self._s.hf_token)
-        self._hf_token.setEchoMode(QLineEdit.EchoMode.Password)
-        self._llm_url     = QLineEdit(self._s.llm_base_url)
-        self._llm_path    = QLineEdit(self._s.local_model_path)
-        f.addRow("Backend:",           self._llm_backend)
-        f.addRow("Main model:",        self._llm_model)
-        f.addRow("Fast model:",        self._llm_fast)
-        f.addRow("OpenAI API Key:",    self._llm_key)
-        f.addRow("HuggingFace token:", self._hf_token)
-        f.addRow("Base URL:",          self._llm_url)
-        f.addRow("Local GGUF path:",   self._llm_path)
-        v.addWidget(g)
+        layout.addLayout(button_layout)
+        self.setLayout(layout)
 
-        g = QGroupBox("TTS — Text-to-Speech")
-        f = QFormLayout(g)
-        self._tts_backend = QComboBox()
-        self._tts_backend.addItems(["glados", "huggingface", "openai", "piper"])
-        idx = self._tts_backend.findText(self._s.tts_backend)
-        if idx >= 0:
-            self._tts_backend.setCurrentIndex(idx)
-        self._tts_hf_repo = QLineEdit(self._s.tts_hf_repo)
-        self._tts_voice   = QLineEdit(self._s.tts_voice)
-        f.addRow("Backend:",       self._tts_backend)
-        f.addRow("HF repo:",       self._tts_hf_repo)
-        f.addRow("Voice/speaker:", self._tts_voice)
-        v.addWidget(g)
+    def _build_general_tab(self) -> QWidget:
+        """Build the General settings tab."""
+        widget = QWidget()
+        layout = QFormLayout()
 
-        g = QGroupBox("Vision")
-        f = QFormLayout(g)
-        self._vision_model = QLineEdit(self._s.vision_model)
-        self._vlm_model    = QLineEdit(self._s.vlm_model)
-        self._use_vlm      = QCheckBox(
-            "Use full VLM (Qwen3.5-4B) instead of CogFlorence"
+        # Hotkey
+        self._hotkey_edit = QLineEdit()
+        layout.addRow("Hotkey:", self._hotkey_edit)
+
+        # Orb size
+        self._orb_size_spin = QSpinBox()
+        self._orb_size_spin.setRange(60, 300)
+        layout.addRow("Orb Size:", self._orb_size_spin)
+
+        # Orb opacity
+        opacity_layout = QHBoxLayout()
+        self._opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self._opacity_slider.setRange(20, 100)
+        self._opacity_label = QLabel("100%")
+        self._opacity_slider.valueChanged.connect(
+            lambda v: self._opacity_label.setText(f"{v}%")
         )
-        self._use_vlm.setChecked(self._s.use_vlm)
-        f.addRow("Caption model:", self._vision_model)
-        f.addRow("VLM model:",     self._vlm_model)
-        f.addRow(self._use_vlm)
-        v.addWidget(g)
-        v.addStretch()
-        return w
+        opacity_layout.addWidget(self._opacity_slider)
+        opacity_layout.addWidget(self._opacity_label)
+        layout.addRow("Orb Opacity:", opacity_layout)
 
-    def _tab_audio(self) -> QWidget:
-        import sounddevice as sd
-        w = QWidget()
-        f = QFormLayout(w)
-        self._mic_combo = QComboBox()
-        try:
-            devices = sd.query_devices()
-        except Exception as exc:
-            log.error("Could not query audio devices: %s", exc)
-            devices = []
-            self._mic_combo.addItem(f"(no audio devices found: {exc})", userData=None)
-        for i, d in enumerate(devices):
-            if d["max_input_channels"] > 0:
-                self._mic_combo.addItem(f"[{i}] {d['name']}", userData=i)
-        f.addRow("Microphone:", self._mic_combo)
-        self._wake_check = QCheckBox("Enable wake-word detection")
-        self._wake_check.setChecked(self._s.wake_word_enabled)
-        f.addRow(self._wake_check)
-        self._wake_model = QLineEdit(self._s.wake_word_model)
-        f.addRow("Wake-word model:", self._wake_model)
-        return w
+        widget.setLayout(layout)
+        return widget
 
-    def _tab_system(self) -> QWidget:
-        w = QWidget()
-        f = QFormLayout(w)
-        self._confirm_check = QCheckBox("Require confirmation before running commands")
-        self._confirm_check.setChecked(self._s.require_action_confirmation)
-        self._screen_check  = QCheckBox("Enable screen context (grim)")
-        self._screen_check.setChecked(self._s.screen_capture_enabled)
-        self._offline_check = QCheckBox("Enable offline fallback mode")
-        self._offline_check.setChecked(self._s.offline_fallback_enabled)
-        self._clip_check    = QCheckBox("Enable clipboard integration")
-        self._clip_check.setChecked(self._s.clipboard_enabled)
-        self._web_check     = QCheckBox("Enable web search")
-        self._web_check.setChecked(self._s.web_search_enabled)
-        self._hotkey_edit   = QLineEdit(self._s.hotkey)
-        f.addRow(self._confirm_check)
-        f.addRow(self._screen_check)
-        f.addRow(self._offline_check)
-        f.addRow(self._clip_check)
-        f.addRow(self._web_check)
-        f.addRow("Global hotkey:", self._hotkey_edit)
-        return w
+    def _build_asr_tab(self) -> QWidget:
+        """Build the ASR settings tab."""
+        widget = QWidget()
+        layout = QFormLayout()
 
-    def _tab_plugins(self) -> QWidget:
-        w = QWidget()
-        v = QVBoxLayout(w)
-        v.addWidget(QLabel("Drop .py plugin files into the plugin directory:"))
-        lbl = QLabel(self._s.plugin_dir)
-        lbl.setStyleSheet("color:#888; font-size:11px;")
-        v.addWidget(lbl)
-        self._plugin_list = QPlainTextEdit()
-        self._plugin_list.setReadOnly(True)
-        self._plugin_list.setFont(_MONO)
-        v.addWidget(self._plugin_list)
-        bar = QHBoxLayout()
-        btn_reload = QPushButton("🔄  Reload Plugins")
-        btn_open   = QPushButton("📂  Open Plugin Dir")
-        btn_reload.clicked.connect(self._reload_plugins)
-        btn_open.clicked.connect(self._open_plugin_dir)
-        bar.addWidget(btn_reload)
-        bar.addWidget(btn_open)
-        bar.addStretch()
-        v.addLayout(bar)
-        self._reload_plugins()
-        return w
+        # Model
+        self._asr_model_edit = QLineEdit()
+        layout.addRow("Whisper Model:", self._asr_model_edit)
 
-    def _tab_log(self) -> QWidget:
-        w = QWidget()
-        v = QVBoxLayout(w)
-        self.log_widget = SyntaxLogWidget()
-        v.addWidget(self.log_widget)
-        bar = QHBoxLayout()
-        btn_clear = QPushButton("🗑  Clear")
-        btn_clear.clicked.connect(self.log_widget.clear)
-        bar.addStretch()
-        bar.addWidget(btn_clear)
-        v.addLayout(bar)
-        return w
+        # Language
+        self._asr_lang_edit = QLineEdit()
+        layout.addRow("Language (empty=auto):", self._asr_lang_edit)
 
-    def _connect_events(self) -> None:
-        bus.subscribe(Event.LOG, self._on_log)
+        # Mic sensitivity
+        sens_layout = QHBoxLayout()
+        self._mic_sens_slider = QSlider(Qt.Orientation.Horizontal)
+        self._mic_sens_slider.setRange(1, 100)
+        self._mic_sens_label = QLabel("50%")
+        self._mic_sens_slider.valueChanged.connect(
+            lambda v: self._mic_sens_label.setText(f"{v}%")
+        )
+        sens_layout.addWidget(self._mic_sens_slider)
+        sens_layout.addWidget(self._mic_sens_label)
+        layout.addRow("Microphone Sensitivity:", sens_layout)
 
-    async def _on_log(self, payload: EventPayload) -> None:
-        data  = payload.data or {}
-        level = data.get("level", "info")
-        msg   = data.get("msg", "")
-        if hasattr(self, "log_widget"):
-            self.log_widget.append_log(level, msg)
+        widget.setLayout(layout)
+        return widget
 
-    def _save(self) -> None:
-        self._s.openai_api_key             = self._llm_key.text()
-        self._s.hf_token                   = self._hf_token.text()
-        self._s.llm_model                  = self._llm_model.text()
-        self._s.llm_fast_model             = self._llm_fast.text()
-        self._s.llm_backend                = self._llm_backend.currentText()
-        self._s.llm_base_url               = self._llm_url.text()
-        self._s.local_model_path           = self._llm_path.text()
-        self._s.tts_backend                = self._tts_backend.currentText()
-        self._s.tts_hf_repo                = self._tts_hf_repo.text()
-        self._s.tts_voice                  = self._tts_voice.text()
-        self._s.vision_model               = self._vision_model.text()
-        self._s.vlm_model                  = self._vlm_model.text()
-        self._s.use_vlm                    = self._use_vlm.isChecked()
-        self._s.hotkey                     = self._hotkey_edit.text()
-        self._s.wake_word_enabled          = self._wake_check.isChecked()
-        self._s.wake_word_model            = self._wake_model.text()
-        self._s.require_action_confirmation = self._confirm_check.isChecked()
-        self._s.screen_capture_enabled     = self._screen_check.isChecked()
-        self._s.offline_fallback_enabled   = self._offline_check.isChecked()
-        self._s.clipboard_enabled          = self._clip_check.isChecked()
-        self._s.web_search_enabled         = self._web_check.isChecked()
-        self._s.save()
+    def _build_llm_tab(self) -> QWidget:
+        """Build the LLM settings tab."""
+        widget = QWidget()
+        layout = QFormLayout()
+
+        # Ollama host
+        self._ollama_host_edit = QLineEdit()
+        layout.addRow("Ollama Host:", self._ollama_host_edit)
+
+        # Model
+        self._llm_model_edit = QLineEdit()
+        layout.addRow("Model Name:", self._llm_model_edit)
+
+        # Max tokens
+        self._max_tokens_spin = QSpinBox()
+        self._max_tokens_spin.setRange(64, 4096)
+        layout.addRow("Max Tokens:", self._max_tokens_spin)
+
+        # Temperature
+        self._temp_spin = QDoubleSpinBox()
+        self._temp_spin.setRange(0.0, 2.0)
+        self._temp_spin.setSingleStep(0.1)
+        layout.addRow("Temperature:", self._temp_spin)
+
+        # System prompt
+        self._system_prompt_edit = QTextEdit()
+        self._system_prompt_edit.setMaximumHeight(150)
+        layout.addRow("System Prompt:", self._system_prompt_edit)
+
+        widget.setLayout(layout)
+        return widget
+
+    def _build_tts_tab(self) -> QWidget:
+        """Build the TTS settings tab."""
+        widget = QWidget()
+        layout = QFormLayout()
+
+        # Backend
+        self._tts_backend_combo = QComboBox()
+        self._tts_backend_combo.addItems(["piper", "espeak-ng"])
+        layout.addRow("TTS Backend:", self._tts_backend_combo)
+
+        # Voice
+        self._tts_voice_edit = QLineEdit()
+        layout.addRow("Voice Model:", self._tts_voice_edit)
+
+        # Speed
+        self._tts_speed_spin = QDoubleSpinBox()
+        self._tts_speed_spin.setRange(0.5, 3.0)
+        self._tts_speed_spin.setSingleStep(0.1)
+        layout.addRow("Speech Speed:", self._tts_speed_spin)
+
+        # Volume
+        vol_layout = QHBoxLayout()
+        self._tts_vol_slider = QSlider(Qt.Orientation.Horizontal)
+        self._tts_vol_slider.setRange(0, 100)
+        self._tts_vol_label = QLabel("100%")
+        self._tts_vol_slider.valueChanged.connect(
+            lambda v: self._tts_vol_label.setText(f"{v}%")
+        )
+        vol_layout.addWidget(self._tts_vol_slider)
+        vol_layout.addWidget(self._tts_vol_label)
+        layout.addRow("Volume:", vol_layout)
+
+        widget.setLayout(layout)
+        return widget
+
+    def _build_features_tab(self) -> QWidget:
+        """Build the Features settings tab."""
+        widget = QWidget()
+        layout = QFormLayout()
+
+        # Wake word
+        self._wake_word_check = QCheckBox("Enable wake word detection")
+        layout.addRow(self._wake_word_check)
+
+        self._wake_word_edit = QLineEdit()
+        layout.addRow("Wake Word Model:", self._wake_word_edit)
+
+        # Screen capture
+        self._screen_cap_check = QCheckBox("Enable screen capture")
+        layout.addRow(self._screen_cap_check)
+
+        # Web search
+        self._web_search_check = QCheckBox("Enable web search")
+        layout.addRow(self._web_search_check)
+
+        # Clipboard
+        self._clipboard_check = QCheckBox("Enable clipboard integration")
+        layout.addRow(self._clipboard_check)
+
+        # Confirm actions
+        self._confirm_check = QCheckBox("Require confirmation for dangerous commands")
+        layout.addRow(self._confirm_check)
+
+        # Memory
+        self._memory_check = QCheckBox("Enable conversation memory")
+        layout.addRow(self._memory_check)
+
+        widget.setLayout(layout)
+        return widget
+
+    def _load_settings(self) -> None:
+        """Load current settings into the UI."""
+        s = self._settings
+
+        # General
+        self._hotkey_edit.setText(s.hotkey)
+        self._orb_size_spin.setValue(s.orb_size)
+        self._opacity_slider.setValue(int(s.orb_opacity * 100))
+
+        # ASR
+        self._asr_model_edit.setText(s.asr_model)
+        self._asr_lang_edit.setText(s.asr_language)
+        self._mic_sens_slider.setValue(int(s.mic_sensitivity * 100))
+
+        # LLM
+        self._ollama_host_edit.setText(s.ollama_host)
+        self._llm_model_edit.setText(s.llm_model)
+        self._max_tokens_spin.setValue(s.llm_max_tokens)
+        self._temp_spin.setValue(s.llm_temperature)
+        self._system_prompt_edit.setPlainText(s.llm_system_prompt)
+
+        # TTS
+        idx = self._tts_backend_combo.findText(s.tts_backend)
+        if idx >= 0:
+            self._tts_backend_combo.setCurrentIndex(idx)
+        self._tts_voice_edit.setText(s.tts_voice)
+        self._tts_speed_spin.setValue(s.tts_speed)
+        self._tts_vol_slider.setValue(int(s.tts_volume * 100))
+
+        # Features
+        self._wake_word_check.setChecked(s.wake_word_enabled)
+        self._wake_word_edit.setText(s.wake_word_model)
+        self._screen_cap_check.setChecked(s.screen_capture_enabled)
+        self._web_search_check.setChecked(s.web_search_enabled)
+        self._clipboard_check.setChecked(s.clipboard_enabled)
+        self._confirm_check.setChecked(s.require_action_confirmation)
+        self._memory_check.setChecked(s.memory_enabled)
+
+    def _on_save(self) -> None:
+        """Save settings from UI to config file."""
+        s = self._settings
+
+        # General
+        s.hotkey = self._hotkey_edit.text()
+        s.orb_size = self._orb_size_spin.value()
+        s.orb_opacity = self._opacity_slider.value() / 100.0
+
+        # ASR
+        s.asr_model = self._asr_model_edit.text()
+        s.asr_language = self._asr_lang_edit.text()
+        s.mic_sensitivity = self._mic_sens_slider.value() / 100.0
+
+        # LLM
+        s.ollama_host = self._ollama_host_edit.text()
+        s.llm_model = self._llm_model_edit.text()
+        s.llm_max_tokens = self._max_tokens_spin.value()
+        s.llm_temperature = self._temp_spin.value()
+        s.llm_system_prompt = self._system_prompt_edit.toPlainText()
+
+        # TTS
+        s.tts_backend = self._tts_backend_combo.currentText()
+        s.tts_voice = self._tts_voice_edit.text()
+        s.tts_speed = self._tts_speed_spin.value()
+        s.tts_volume = self._tts_vol_slider.value() / 100.0
+
+        # Features
+        s.wake_word_enabled = self._wake_word_check.isChecked()
+        s.wake_word_model = self._wake_word_edit.text()
+        s.screen_capture_enabled = self._screen_cap_check.isChecked()
+        s.web_search_enabled = self._web_search_check.isChecked()
+        s.clipboard_enabled = self._clipboard_check.isChecked()
+        s.require_action_confirmation = self._confirm_check.isChecked()
+        s.memory_enabled = self._memory_check.isChecked()
+
+        s.save()
         log.info("Settings saved")
+        QMessageBox.information(self, "NixOrb", "Settings saved successfully!")
+        self.accept()
 
-        # Only emit_sync if the event loop is actually running
-        # (not in standalone config-gui mode)
-        if bus._loop is not None and bus._loop.is_running():  # noqa: SLF001
-            bus.emit_sync(Event.SETTINGS_CHANGED, source="SettingsWindow")
+    def _on_cancel(self) -> None:
+        """Discard changes and close."""
+        self.reject()
 
-        if hasattr(self, "log_widget"):
-            self.log_widget.append_log("success", "✅ Settings saved.")
+    @classmethod
+    def show_singleton(cls, settings: Any = None) -> None:
+        """Show the settings window as a singleton."""
+        global _settings_window
 
-    def _export(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Export Config", "nixorb_backup.tar.gz.enc",
-            "Encrypted archive (*.tar.gz.enc)"
-        )
-        if path:
-            from nixorb.utils.crypto import export_config
-            pwd, ok = self._ask_password()
-            if ok:
-                export_config(self._s, path, pwd)
-                if hasattr(self, "log_widget"):
-                    self.log_widget.append_log("success", f"Exported → {path}")
+        if _settings_window is not None and _settings_window.isVisible():
+            _settings_window.raise_()
+            _settings_window.activateWindow()
+            return
 
-    def _import_cfg(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Import Config", "", "Encrypted archive (*.tar.gz.enc)"
-        )
-        if path:
-            from nixorb.utils.crypto import import_config
-            pwd, ok = self._ask_password()
-            if ok:
-                import_config(self._s, path, pwd)
-                if hasattr(self, "log_widget"):
-                    self.log_widget.append_log("success", f"Imported ← {path}")
+        if settings is None:
+            from nixorb.settings import Settings
 
-    def _ask_password(self) -> tuple[str, bool]:
-        from PySide6.QtWidgets import QInputDialog
-        pwd, ok = QInputDialog.getText(
-            self, "Encryption Password", "Password:",
-            QLineEdit.EchoMode.Password,
-        )
-        return pwd or "nixorb", ok
+            settings = Settings.load()
 
-    def _reload_plugins(self) -> None:
-        from nixorb.plugins.loader import PluginLoader
-        loader = PluginLoader(self._s.plugin_dir)
-        loader.reload_all()
-        names = loader.plugin_names()
-        self._plugin_list.setPlainText(
-            "\n".join(names) if names else "(no plugins found)"
-        )
-
-    def _open_plugin_dir(self) -> None:
-        import shutil
-        import subprocess
-        d = self._s.plugin_dir
-        __import__("pathlib").Path(d).mkdir(parents=True, exist_ok=True)
-        for fm in ("dolphin", "nautilus", "thunar", "xdg-open"):
-            if shutil.which(fm):
-                subprocess.Popen([fm, d])  # noqa: S603
-                break
+        _settings_window = cls(settings)
+        _settings_window.show()
