@@ -1,103 +1,172 @@
-#!/usr/bin/env bash
-# install.sh — NixOrb installer for bash/zsh
-# Usage: bash install.sh
-# Run from inside the nixorb/ directory.
+#!/bin/bash
+# NixOrb installer for Arch Linux + KDE Plasma 6
+# Usage: ./install.sh
 
-set -euo pipefail
+set -e
 
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+echo -e "${BLUE}╔══════════════════════════════════════════╗${NC}"
+echo -e "${BLUE}║      NixOrb Installer for Arch Linux     ║${NC}"
+echo -e "${BLUE}╚══════════════════════════════════════════╝${NC}"
 echo ""
-echo "╔══════════════════════════════════════════════════╗"
-echo "║         NixOrb Installer (bash/zsh)              ║"
-echo "╚══════════════════════════════════════════════════╝"
+
+# Check if running on Arch
+if ! command -v pacman &> /dev/null; then
+    echo -e "${RED}Error: This installer is for Arch Linux only.${NC}"
+    echo "For other distributions, install dependencies manually."
+    exit 1
+fi
+
+# Check for NVIDIA GPU
+if command -v nvidia-smi &> /dev/null; then
+    GPU_INFO=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
+    echo -e "${GREEN}✓ NVIDIA GPU detected: $GPU_INFO${NC}"
+    HAS_NVIDIA=true
+else
+    echo -e "${YELLOW}⚠ No NVIDIA GPU detected — CPU inference will be slower${NC}"
+    HAS_NVIDIA=false
+fi
+
+# ── System Dependencies ────────────────────────────────────────── #
 echo ""
+echo -e "${BLUE}→ Installing system dependencies…${NC}"
 
-[[ -f pyproject.toml ]] || { echo "ERROR: run from inside nixorb/"; exit 1; }
-
-# ── 1. System packages ─────────────────────────────────────────────── #
-echo "==> [1/7] Installing system packages..."
 sudo pacman -S --needed --noconfirm \
-    python qt6-base qt6-declarative qt6-wayland qt6-multimedia qt6-tools \
-    qt6-shadertools \
-    cuda cudnn portaudio wl-clipboard grim ffmpeg base-devel git
+    python python-pip python-virtualenv \
+    qt6-base qt6-declarative qt6-wayland qt6-multimedia \
+    portaudio wl-clipboard grim slurp \
+    espeak-ng bubblewrap \
+    git base-devel
 
-command -v yay &>/dev/null && \
-    yay -S --needed --noconfirm kglobalacceld 2>/dev/null || \
-    echo "  [SKIP] yay not found — using pynput hotkey fallback"
+echo -e "${GREEN}✓ System dependencies installed${NC}"
 
-# ── 2. Venv ────────────────────────────────────────────────────────── #
+# ── Optional: Piper TTS ────────────────────────────────────────── #
 echo ""
-echo "==> [2/7] Creating Python virtual environment..."
-[[ -d .venv ]] || python -m venv .venv --system-site-packages
-# shellcheck disable=SC1091
-source .venv/bin/activate
-echo "  venv activated"
-
-# ── 3. PyTorch CUDA 11.8 ───────────────────────────────────────────── #
-echo ""
-echo "==> [3/7] Installing PyTorch (CUDA 11.8)..."
-pip install -q "torch==2.7.1+cu118" "torchaudio==2.7.1+cu118" \
-    --index-url https://download.pytorch.org/whl/cu118
-
-# ── 4. NixOrb (hatchling editable) ────────────────────────────────── #
-echo ""
-echo "==> [4/7] Installing NixOrb (editable)..."
-pip install -q --upgrade pip hatchling
-pip install -q -e ".[dev]"
-
-# ── 5. pip-only extras ─────────────────────────────────────────────── #
-echo ""
-echo "==> [5/7] Installing piper-tts and openwakeword via pip..."
-pip install -q piper-tts 2>/dev/null || pip install -q piper-phonemize 2>/dev/null || true
-pip install -q openwakeword
-pip install -q faster-whisper chromadb aiohttp qasync pygments cryptography \
-    pynput hypernix openai "huggingface-hub>=0.23" sounddevice soundfile 2>/dev/null || true
-
-# ── 6. Shaders ─────────────────────────────────────────────────────── #
-echo ""
-echo "==> [6/7] Compiling QML shaders..."
-QSB=""
-for p in /usr/lib/qt6/bin/qsb /usr/bin/qsb "$(command -v qsb 2>/dev/null)"; do
-    [[ -x "$p" ]] && { QSB="$p"; break; }
-done
-
-if [[ -z "$QSB" ]]; then
-    echo "  [WARN] qsb not in PATH. Trying /usr/lib/qt6/bin/qsb..."
-    if [[ -x /usr/lib/qt6/bin/qsb ]]; then
-        QSB=/usr/lib/qt6/bin/qsb
+echo -e "${BLUE}→ Installing Piper TTS…${NC}"
+if ! command -v piper &> /dev/null; then
+    echo "Piper not found — attempting to install from AUR"
+    if command -v yay &> /dev/null; then
+        yay -S --needed --noconfirm piper-tts-bin
+    elif command -v paru &> /dev/null; then
+        paru -S --needed --noconfirm piper-tts-bin
     else
-        echo "  [WARN] qsb not found — install qt6-shadertools. Shaders NOT compiled."
-        echo "         Run:  /usr/lib/qt6/bin/qsb --glsl '100es,120,150' --hlsl 50 --msl 12 \\"
-        echo "                  assets/shaders/orb_glow.vert -o assets/shaders/orb_glow.vert.qsb"
+        echo -e "${YELLOW}⚠ No AUR helper found (install yay or paru)${NC}"
+        echo "Piper TTS can be installed manually from AUR: piper-tts-bin"
     fi
+else
+    echo -e "${GREEN}✓ Piper already installed${NC}"
 fi
 
-if [[ -n "$QSB" ]]; then
-    "$QSB" --glsl "100es,120,150" --hlsl 50 --msl 12 \
-        assets/shaders/orb_glow.vert -o assets/shaders/orb_glow.vert.qsb
-    "$QSB" --glsl "100es,120,150" --hlsl 50 --msl 12 \
-        assets/shaders/orb_glow.frag -o assets/shaders/orb_glow.frag.qsb
-    echo "  Shaders compiled OK"
+# ── Ollama ─────────────────────────────────────────────────────── #
+echo ""
+echo -e "${BLUE}→ Installing Ollama…${NC}"
+if ! command -v ollama &> /dev/null; then
+    echo "Installing Ollama…"
+    curl -fsSL https://ollama.com/install.sh | sh
+    echo -e "${GREEN}✓ Ollama installed${NC}"
+else
+    echo -e "${GREEN}✓ Ollama already installed${NC}"
 fi
 
-# ── 7. Download models ──────────────────────────────────────────────── #
-echo ""
-echo "==> [7/8] Downloading ASR + wake-word models..."
-echo "  (LLM/TTS/vision models download automatically on first use instead —"
-echo "   they're much larger and picking the wrong one wastes bandwidth.)"
-nixorb download-models || echo "  [WARN] Model download failed — run 'nixorb download-models' manually later."
+# Start Ollama service
+if ! systemctl --user is-active --quiet ollama; then
+    echo "Starting Ollama service…"
+    systemctl --user enable ollama
+    systemctl --user start ollama
+    sleep 2
+fi
 
-# ── 8. Verify ──────────────────────────────────────────────────────── #
+# ── Python Environment ─────────────────────────────────────────── #
 echo ""
-echo "==> [8/8] Verifying..."
-nixorb version && echo "  nixorb CLI: OK"
-python -c "import torch; print('  torch', torch.__version__, 'CUDA:', torch.cuda.is_available())"
-python -c "import PySide6.QtCore; print('  PySide6: OK')" 2>/dev/null || echo "  [WARN] PySide6 issue"
+echo -e "${BLUE}→ Setting up Python environment…${NC}"
 
+VENV_DIR="${HOME}/.local/share/nixorb/venv"
+mkdir -p "$VENV_DIR"
+
+if [ ! -f "$VENV_DIR/bin/python" ]; then
+    python -m venv "$VENV_DIR"
+fi
+
+source "$VENV_DIR/bin/activate"
+
+# Install PyTorch with CUDA if NVIDIA GPU detected
+if [ "$HAS_NVIDIA" = true ]; then
+    echo -e "${BLUE}→ Installing PyTorch with CUDA 11.8…${NC}"
+    pip install torch==2.7.1+cu118 torchaudio==2.7.1+cu118 \
+        --index-url https://download.pytorch.org/whl/cu118
+else
+    echo -e "${BLUE}→ Installing PyTorch (CPU-only)…${NC}"
+    pip install torch torchaudio
+fi
+
+# Install NixOrb
+echo -e "${BLUE}→ Installing NixOrb…${NC}"
+pip install -e "."
+
+# ── Pull default model ─────────────────────────────────────────── #
 echo ""
-echo "╔══════════════════════════════════════════════════╗"
-echo "║  ✅  Done. Run:  nixorb start                    ║"
-echo "║                                                    ║"
-echo "║  Wake word is OFF by default. Enable it with:     ║"
-echo "║    nixorb config wake_word_enabled true           ║"
-echo "╚══════════════════════════════════════════════════╝"
+echo -e "${BLUE}→ Pulling default LLM model (llama3.2)…${NC}"
+ollama pull llama3.2
+
+# ── Piper voice model ──────────────────────────────────────────── #
+echo ""
+echo -e "${BLUE}→ Downloading Piper voice model…${NC}"
+VOICE_DIR="${HOME}/.local/share/piper/voices"
+mkdir -p "$VOICE_DIR"
+
+if [ ! -f "$VOICE_DIR/en_US-lessac-medium.onnx" ]; then
+    cd "$VOICE_DIR"
+    curl -L -o en_US-lessac-medium.onnx \
+        "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx"
+    curl -L -o en_US-lessac-medium.onnx.json \
+        "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json"
+    echo -e "${GREEN}✓ Voice model downloaded${NC}"
+else
+    echo -e "${GREEN}✓ Voice model already exists${NC}"
+fi
+
+# ── Desktop Entry ──────────────────────────────────────────────── #
+echo ""
+echo -e "${BLUE}→ Creating desktop entry…${NC}"
+
+mkdir -p "${HOME}/.local/share/applications"
+cat > "${HOME}/.local/share/applications/nixorb.desktop" << 'EOF'
+[Desktop Entry]
+Name=NixOrb
+Comment=Floating AI Assistant
+Exec=nixorb start
+Icon=audio-input-microphone
+Type=Application
+Categories=Utility;Audio;
+StartupNotify=false
+EOF
+
+echo -e "${GREEN}✓ Desktop entry created${NC}"
+
+# ── KDE Shortcut ───────────────────────────────────────────────── #
+echo ""
+echo -e "${YELLOW}⚠ Important: Set up KDE shortcut:${NC}"
+echo "   1. Open System Settings → Shortcuts → Custom Shortcuts"
+echo "   2. Add a new global shortcut → Command/URL"
+echo "   3. Set trigger: Meta+Space (or your preference)"
+echo "   4. Set command: nixorb trigger"
+echo "   5. Apply and save"
+echo ""
+
+# ── Done ───────────────────────────────────────────────────────── #
+echo -e "${GREEN}╔══════════════════════════════════════════╗${NC}"
+echo -e "${GREEN}║     NixOrb installation complete!        ║${NC}"
+echo -e "${GREEN}╚══════════════════════════════════════════╝${NC}"
+echo ""
+echo "Start NixOrb:     nixorb start"
+echo "Check status:     nixorb status"
+echo "Edit config:      nixorb config"
+echo "Check deps:       nixorb check"
+echo ""
+echo -e "${BLUE}Logs: ~/.local/share/nixorb/logs/nixorb.log${NC}"
 echo ""

@@ -1,6 +1,3 @@
-"""NixOrb — floating AI assistant orb for Arch Linux."""
-from __future__ import annotations
+"""NixOrb - Floating AI assistant orb for Arch Linux + KDE Plasma 6."""
 
-__version__ = "0.01.0.05"
-__author__  = "NixOrb Contributors"
-__license__ = "MIT"
+__version__ = "2.0.0"

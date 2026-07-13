@@ -1,114 +1,147 @@
-// assets/orb.qml
-// NixOrb floating orb — Qt 6.5+  QtQuick 2.15  QtQuick.Particles 2.15
 import QtQuick 2.15
-import QtQuick.Controls 2.15
-import QtQuick.Particles 2.15
+import QtQuick.Shapes 1.15
+import NixOrb 1.0
+
+// NixOrb Floating Orb — GLSL shader-powered glowing sphere
+// States: idle (blue) → listening (green) → thinking (amber) → speaking (purple)
 
 Item {
     id: root
-    readonly property real    amplitude : orbBridge.amplitude
-    readonly property string  orbColor  : orbBridge.color
-    readonly property string  orbState  : orbBridge.state
-    width:  120
-    height: 120
-    layer.enabled: true
+    width: orbBridge ? orbBridge.orbSize : 120
+    height: width
 
+    // Properties bound to C++ bridge
+    property string orbState: orbBridge ? orbBridge.state : "idle"
+    property real orbAmplitude: orbBridge ? orbBridge.amplitude : 0.0
+    property string orbColor: orbBridge ? orbBridge.color : "#4A90D9"
+    property real orbOpacity: orbBridge ? orbBridge.opacity : 1.0
+
+    // Animated properties
+    property real pulseScale: 1.0
+    property real glowIntensity: 0.6
+
+    // Opacity
+    opacity: orbOpacity
+
+    // Pulse animation for speaking/listening
+    SequentialAnimation on pulseScale {
+        id: pulseAnim
+        loops: Animation.Infinite
+        running: orbState === "speaking" || orbState === "listening"
+        NumberAnimation { to: 1.15; duration: 400; easing.type: Easing.InOutQuad }
+        NumberAnimation { to: 1.0; duration: 400; easing.type: Easing.InOutQuad }
+    }
+
+    // Glow intensity animation
+    NumberAnimation on glowIntensity {
+        id: glowAnim
+        running: orbState === "thinking"
+        loops: Animation.Infinite
+        from: 0.3
+        to: 1.0
+        duration: 800
+        easing.type: Easing.InOutSine
+    }
+
+    // Outer glow
     Rectangle {
-        id: glowBackdrop
+        id: outerGlow
         anchors.centerIn: parent
-        width: 112 + root.amplitude * 8
+        width: parent.width * pulseScale * 1.4
         height: width
         radius: width / 2
-        color: root.orbColor
-        opacity: 0.18 + root.amplitude * 0.16
-        scale: 1.0
-        Behavior on color { ColorAnimation { duration: 350 } }
-        Behavior on opacity { SmoothedAnimation { velocity: 3 } }
-        SequentialAnimation on scale {
-            loops: Animation.Infinite
-            NumberAnimation { to: 1.08; duration: 1700; easing.type: Easing.InOutSine }
-            NumberAnimation { to: 1.0; duration: 1700; easing.type: Easing.InOutSine }
+        color: orbColor
+        opacity: (0.15 + orbAmplitude * 0.3) * glowIntensity
+
+        Behavior on opacity {
+            NumberAnimation { duration: 200 }
         }
     }
 
+    // Middle glow
     Rectangle {
-        id: pulseRing
+        id: middleGlow
         anchors.centerIn: parent
-        width:  76 + root.amplitude * 36; height: width; radius: width/2
-        color: "transparent"
-        border.color: root.orbColor
-        border.width: 1.5 + root.amplitude * 1.5
-        opacity: 0.30 + root.amplitude * 0.45
-        Behavior on width        { SmoothedAnimation { velocity:120 } }
-        Behavior on opacity      { SmoothedAnimation { velocity:3   } }
-        Behavior on border.color { ColorAnimation    { duration:350 } }
+        width: parent.width * pulseScale * 1.15
+        height: width
+        radius: width / 2
+        color: orbColor
+        opacity: (0.3 + orbAmplitude * 0.4) * glowIntensity
+
+        Behavior on opacity {
+            NumberAnimation { duration: 150 }
+        }
     }
 
+    // Main orb body
     Rectangle {
+        id: orbBody
         anchors.centerIn: parent
-        width:  92 + root.amplitude * 22; height: width; radius: width/2
-        color: "transparent"
-        border.color: root.orbColor; border.width: 0.8
-        opacity: 0.12 + root.amplitude * 0.18
-        Behavior on width        { SmoothedAnimation { velocity:60 } }
-        Behavior on border.color { ColorAnimation { duration:350 } }
+        width: parent.width * pulseScale
+        height: width
+        radius: width / 2
+
+        // Gradient for 3D sphere effect
+        gradient: Gradient {
+            GradientStop { position: 0.0; color: Qt.lighter(orbColor, 1.4) }
+            GradientStop { position: 0.4; color: orbColor }
+            GradientStop { position: 1.0; color: Qt.darker(orbColor, 1.6) }
+        }
+
+        // Highlight reflection
+        Rectangle {
+            anchors {
+                top: parent.top
+                topMargin: parent.height * 0.12
+                horizontalCenter: parent.horizontalCenter
+            }
+            width: parent.width * 0.35
+            height: width * 0.55
+            radius: width / 2
+            color: "#FFFFFF"
+            opacity: 0.25 + orbAmplitude * 0.15
+        }
     }
 
-    ParticleSystem { id: particles; running: root.orbState === "speaking"; paused: root.orbState !== "speaking" }
-
-    ImageParticle {
-        system: particles
-        source: "qrc:///qtquick/particleresources/glowdot.png"
-        color: root.orbColor; colorVariation:0.25; alpha:0.80; alphaVariation:0.20
-        sizeTable: "qrc:///qtquick/particleresources/sine.png"
-        Behavior on color { ColorAnimation { duration: 350 } }
-    }
-
-    Emitter {
-        system: particles; anchors.centerIn: parent
-        emitRate: Math.max(0, Math.floor(root.amplitude * 90))
-        lifeSpan: 700; lifeSpanVariation: 300
-        size: 7; sizeVariation: 5; endSize: 1
-        velocity: AngleDirection { angleVariation:360; magnitude:38+root.amplitude*65; magnitudeVariation:18 }
-    }
-
-    SequentialAnimation {
-        loops: Animation.Infinite; running: root.orbState === "listening"
-        NumberAnimation { target:pulseRing; property:"opacity"; to:0.80; duration:500; easing.type:Easing.InOutSine }
-        NumberAnimation { target:pulseRing; property:"opacity"; to:0.25; duration:500; easing.type:Easing.InOutSine }
-    }
-
+    // Audio reactivity ring (visible when speaking/listening)
     Rectangle {
-        visible: root.orbState === "thinking"
-        anchors.centerIn: parent; width:100; height:100; radius:50
-        color:"transparent"; border.color:root.orbColor; border.width:2; opacity:0.55
-        RotationAnimation on rotation { from:0; to:360; duration:1200; loops:Animation.Infinite; running:root.orbState==="thinking" }
-        Rectangle { anchors.centerIn:parent; width:parent.width-4; height:parent.height-4; radius:width/2; color:"#1a1a2e" }
+        id: audioRing
+        anchors.centerIn: parent
+        width: parent.width * (1.0 + orbAmplitude * 0.5)
+        height: width
+        radius: width / 2
+        color: "transparent"
+        border.color: orbColor
+        border.width: 2
+        opacity: orbAmplitude * 0.8
+        visible: orbAmplitude > 0.05
     }
 
+    // Click handler
     MouseArea {
-        id: mouseArea; anchors.fill:parent; hoverEnabled:true
-        acceptedButtons: Qt.LeftButton | Qt.RightButton
-        onClicked: function(m) { if (m.button===Qt.LeftButton) orbBridge.clicked() }
-        onDoubleClicked: orbBridge.clicked()
-        onPressAndHold:  ctxMenu.popup()
-        onContainsMouseChanged: root.scale = containsMouse ? 1.08 : 1.0
-    }
-    Behavior on scale { SmoothedAnimation { velocity:6 } }
-
-    Menu {
-        id: ctxMenu
-        background: Rectangle { color:"#1a1a2e"; border.color:"#2a2a4e"; radius:6 }
-        MenuItem { text:"🎙  Activate";  onTriggered: orbBridge.clicked();       contentItem: Text { text:parent.text; color:"#e0e0e0" } }
-        MenuItem { text:"⚙  Settings";  onTriggered: orbBridge.openSettings();  contentItem: Text { text:parent.text; color:"#e0e0e0" } }
-        MenuSeparator {}
-        MenuItem { text:"✕  Quit";      onTriggered: Qt.quit();                 contentItem: Text { text:parent.text; color:"#e74c3c" } }
+        anchors.fill: parent
+        onClicked: {
+            if (orbBridge) {
+                orbBridge.clicked()
+            }
+        }
+        onDoubleClicked: {
+            if (orbBridge) {
+                orbBridge.openSettings()
+            }
+        }
     }
 
+    // State indicator text (small, subtle)
     Text {
-        anchors { horizontalCenter:parent.horizontalCenter; bottom:parent.bottom; bottomMargin:-18 }
-        text: root.orbState; color: root.orbColor
-        font.pixelSize:10; opacity: mouseArea.containsMouse ? 0.85 : 0.0
-        Behavior on opacity { NumberAnimation { duration:200 } }
+        anchors {
+            bottom: parent.bottom
+            bottomMargin: -18
+            horizontalCenter: parent.horizontalCenter
+        }
+        text: orbState.charAt(0).toUpperCase() + orbState.slice(1)
+        color: orbColor
+        font.pixelSize: 10
+        opacity: 0.7
     }
 }

@@ -1,109 +1,233 @@
-"""nixorb/ui/confirm_dialog.py — Confirmation dialog for ACTION blocks."""
+"""NixOrb action confirmation dialog.
+
+Shows a modal dialog when the AI wants to execute a potentially
+destructive command, requiring explicit user confirmation.
+"""
 from __future__ import annotations
 
+import asyncio
 import logging
+from typing import Any
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
-    QDialogButtonBox,
+    QHBoxLayout,
     QLabel,
-    QPlainTextEdit,
+    QMessageBox,
+    QPushButton,
+    QTextEdit,
     QVBoxLayout,
 )
 
+from nixorb.core.event_bus import Event, EventPayload, bus
+
 log = logging.getLogger(__name__)
 
-_STYLE = """
-QDialog     { background:#1a1a2e; color:#e0e0e0; }
-QLabel      { color:#e0e0e0; }
-QPlainTextEdit { background:#0d0d1a; color:#f39c12; font-family:monospace;
-                 border:1px solid #f39c12; border-radius:4px; padding:6px; }
-QPushButton { padding:6px 18px; border-radius:4px; border:none; }
-QPushButton[text="▶  Run"] { background:#27ae60; color:white; }
-QPushButton[text="▶  Run"]:hover { background:#2ecc71; }
-QPushButton[text="✕  Deny"] { background:#c0392b; color:white; }
-QPushButton[text="✕  Deny"]:hover { background:#e74c3c; }
-"""
+# Commands that are always denied
+HARD_DENYLIST = {
+    "rm -rf /",
+    "rm -rf /*",
+    "dd if=/dev/zero of=/dev/sda",
+    "mkfs.",
+    ":(){ :|:& };:",
+    "> /dev/sda",
+}
+
+# Commands that require confirmation
+REQUIRE_CONFIRM = {
+    "rm -rf",
+    "rm -r",
+    "dd ",
+    "mkfs",
+    "fdisk",
+    "parted",
+    "chmod -R",
+    "chown -R",
+    "pacman -R",
+    "pacman -S",
+    "systemctl stop",
+    "systemctl disable",
+    "kill ",
+    "pkill",
+    "curl",
+    "wget",
+    "pip install",
+    "pip uninstall",
+}
+
+
+def _is_dangerous(command: str) -> bool:
+    """Check if a command requires confirmation."""
+    cmd_lower = command.lower().strip()
+
+    # Hard denylist
+    for denied in HARD_DENYLIST:
+        if denied in cmd_lower:
+            return True
+
+    # Confirmation required
+    for pattern in REQUIRE_CONFIRM:
+        if pattern in cmd_lower:
+            return True
+
+    return False
+
+
+def _should_confirm(command: str) -> bool:
+    """Check if a command should show the confirmation dialog."""
+    return _is_dangerous(command)
 
 
 class ConfirmDialog(QDialog):
-    """
-    Non-blocking confirmation dialog for shell commands proposed by the LLM.
-    Shown before any ACTION block executes.
-    """
+    """Modal dialog for command confirmation."""
 
-    def __init__(self, command: str, parent=None) -> None:
+    def __init__(self, command: str, parent: Any = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("NixOrb — Command Confirmation")
-        self.setStyleSheet(_STYLE)
-        self.setMinimumWidth(520)
-        self.setWindowFlags(
-            Qt.WindowType.Dialog
-            | Qt.WindowType.WindowStaysOnTopHint
+        self._command = command
+        self._result = False
+
+        self.setWindowTitle("NixOrb — Confirm Action")
+        self.setModal(True)
+        self.setMinimumWidth(500)
+
+        layout = QVBoxLayout()
+
+        # Warning label
+        warning = QLabel("⚠️ NixOrb wants to execute a command:")
+        warning.setStyleSheet("font-weight: bold; font-size: 14px;")
+        layout.addWidget(warning)
+
+        # Command display
+        cmd_display = QTextEdit()
+        cmd_display.setPlainText(command)
+        cmd_display.setReadOnly(True)
+        cmd_display.setMaximumHeight(100)
+        cmd_display.setStyleSheet(
+            "background-color: #2d2d2d; color: #f0f0f0; font-family: monospace;"
         )
-        self._build_ui(command)
+        layout.addWidget(cmd_display)
 
-    def _build_ui(self, command: str) -> None:
-        v = QVBoxLayout(self)
+        # Info label
+        info = QLabel("This command may modify your system. Only approve if you trust it.")
+        info.setStyleSheet("color: #888;")
+        layout.addWidget(info)
 
-        warn = QLabel("⚠  NixOrb wants to run this command:")
-        warn.setStyleSheet("font-weight:bold; font-size:13px;")
-        v.addWidget(warn)
+        # Buttons
+        button_layout = QHBoxLayout()
 
-        cmd_box = QPlainTextEdit()
-        cmd_box.setReadOnly(True)
-        cmd_box.setPlainText(command)
-        cmd_box.setMaximumHeight(100)
-        v.addWidget(cmd_box)
+        deny_btn = QPushButton("❌ Deny")
+        deny_btn.setStyleSheet("background-color: #c0392b; color: white;")
+        deny_btn.clicked.connect(self._on_deny)
+        button_layout.addWidget(deny_btn)
 
-        hint = QLabel("Review carefully before running.")
-        hint.setStyleSheet("color:#95a5a6; font-size:11px;")
-        v.addWidget(hint)
+        button_layout.addStretch()
 
-        btns = QDialogButtonBox()
-        run_btn  = btns.addButton("▶  Run",  QDialogButtonBox.ButtonRole.AcceptRole)
-        deny_btn = btns.addButton("✕  Deny", QDialogButtonBox.ButtonRole.RejectRole)
-        run_btn.clicked.connect(self.accept)
-        deny_btn.clicked.connect(self.reject)
-        v.addWidget(btns)
+        approve_btn = QPushButton("✅ Approve")
+        approve_btn.setStyleSheet("background-color: #27ae60; color: white;")
+        approve_btn.setDefault(True)
+        approve_btn.clicked.connect(self._on_approve)
+        button_layout.addWidget(approve_btn)
 
-    @staticmethod
-    def ask(command: str) -> bool:
-        """Show dialog and return True if user approved."""
-        dlg = ConfirmDialog(command)
-        result = dlg.exec()
-        approved = result == QDialog.DialogCode.Accepted
-        log.info("Command %s by user: %s", "approved" if approved else "denied", command[:80])
-        return approved
+        layout.addLayout(button_layout)
+        self.setLayout(layout)
+
+    def _on_approve(self) -> None:
+        self._result = True
+        self.accept()
+
+    def _on_deny(self) -> None:
+        self._result = False
+        self.reject()
+
+    def get_result(self) -> bool:
+        return self._result
 
 
-def register_confirmation_handler(bus, event, ask_fn=None) -> None:
-    """
-    Wire ``Event.ACTION_REQUESTED`` to a confirmation dialog and reply on
-    ``Event.ACTION_RESULT``.
+# Global pending confirmations
+_pending_confirmations: dict[str, asyncio.Future[bool]] = {}
 
-    Without this, nothing ever listens for ACTION_REQUESTED, so
-    ActionExecutor's confirmation wait always times out (30s) and silently
-    denies *every* command — no dialog ever appears, no error is shown.
-    This was exactly that bug: the wiring simply didn't exist anywhere.
 
-    ``ask_fn`` defaults to :meth:`ConfirmDialog.ask` and is overridable
-    purely so this can be unit-tested without booting a real Qt dialog.
-    """
-    from nixorb.core.event_bus import Event  # local import avoids cycles
+def register_confirmation_handler() -> None:
+    """Register the event bus handler for action confirmations."""
 
-    if ask_fn is None:
-        ask_fn = ConfirmDialog.ask
-
-    async def _on_action_requested(payload) -> None:
+    async def _handle_action_requested(payload: EventPayload) -> None:
         data = payload.data or {}
-        cmd  = data.get("command", "")
-        approved = ask_fn(cmd)  # blocking Qt dialog — safe on the Qt/qasync thread
-        bus.emit_sync(
-            Event.ACTION_RESULT,
-            data={"command": cmd, "approved": approved},
-            source="ConfirmDialog",
-        )
+        command = data.get("command", "")
+        request_id = data.get("request_id", "")
 
-    bus.subscribe(event, _on_action_requested, priority=1)
+        if not _should_confirm(command):
+            # Auto-approve safe commands
+            bus.emit_sync(
+                Event.ACTION_CONFIRMED,
+                data={"request_id": request_id, "command": command},
+                source="confirm_dialog",
+            )
+            return
+
+        # Check hard denylist
+        cmd_lower = command.lower().strip()
+        for denied in HARD_DENYLIST:
+            if denied in cmd_lower:
+                log.warning("Confirm: hard-denied command: %s", command)
+                bus.emit_sync(
+                    Event.ACTION_DENIED,
+                    data={
+                        "request_id": request_id,
+                        "command": command,
+                        "reason": "Hard denylist",
+                    },
+                    source="confirm_dialog",
+                )
+                return
+
+        # Show confirmation dialog on main thread
+        future: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+        _pending_confirmations[request_id] = future
+
+        def _show_dialog() -> None:
+            try:
+                dialog = ConfirmDialog(command)
+                result = dialog.exec() == QDialog.DialogCode.Accepted
+                if not future.done():
+                    future.set_result(result)
+            except Exception as exc:
+                log.error("Confirm dialog error: %s", exc)
+                if not future.done():
+                    future.set_result(False)
+
+        # Schedule on Qt main thread
+        from PySide6.QtCore import QTimer
+
+        QTimer.singleShot(0, _show_dialog)
+
+        # Wait for user response
+        try:
+            approved = await asyncio.wait_for(future, timeout=60.0)
+        except asyncio.TimeoutError:
+            log.warning("Confirm: timeout waiting for user response")
+            approved = False
+
+        if request_id in _pending_confirmations:
+            del _pending_confirmations[request_id]
+
+        if approved:
+            bus.emit_sync(
+                Event.ACTION_CONFIRMED,
+                data={"request_id": request_id, "command": command},
+                source="confirm_dialog",
+            )
+        else:
+            bus.emit_sync(
+                Event.ACTION_DENIED,
+                data={
+                    "request_id": request_id,
+                    "command": command,
+                    "reason": "User denied",
+                },
+                source="confirm_dialog",
+            )
+
+    bus.subscribe(Event.ACTION_REQUESTED, _handle_action_requested)
+    log.info("ConfirmDialog: handler registered")

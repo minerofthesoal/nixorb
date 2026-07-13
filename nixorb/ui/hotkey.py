@@ -1,9 +1,9 @@
-"""
-nixorb/ui/hotkey.py — Global hotkey for NixOrb.
+"""NixOrb global hotkey manager.
 
-On Wayland, pynput's GlobalHotKeys uses XLib which requires a running
-X server (XWayland). If DISPLAY is not set, we try to find XWayland
-automatically and set DISPLAY before pynput initialises.
+Uses pynput for global hotkey capture. On Wayland, pynput requires
+XWayland (DISPLAY env var). If unavailable, falls back to orb double-click.
+
+KDE Plasma 6 users can also set a KWin shortcut that runs `nixorb trigger`.
 """
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ import os
 import subprocess
 import threading
 from typing import TYPE_CHECKING
+
+from PySide6.QtCore import QMetaObject, QObject, Qt, Slot
 
 from nixorb.core.event_bus import Event, bus
 
@@ -22,15 +24,14 @@ log = logging.getLogger(__name__)
 
 
 def _ensure_display() -> bool:
-    """Make sure DISPLAY is set for pynput (XWayland support)."""
+    """Ensure DISPLAY is set for pynput (XWayland support)."""
     if os.environ.get("DISPLAY"):
         return True
 
-    # Try to find an active XWayland display
+    # Try to find XWayland display
     try:
         out = subprocess.check_output(
-            ["bash", "-c",
-             "ls /tmp/.X11-unix/X* 2>/dev/null | head -1"],
+            ["bash", "-c", "ls /tmp/.X11-unix/X* 2>/dev/null | head -1"],
             timeout=2,
         ).decode().strip()
         if out:
@@ -43,25 +44,26 @@ def _ensure_display() -> bool:
 
     log.warning(
         "Hotkey: DISPLAY not set — global hotkeys need XWayland.\n"
-        "  Fix: export DISPLAY=:0  (or whatever your XWayland display is)\n"
+        "  Fix: export DISPLAY=:0\n"
         "  Or use KDE System Settings → Shortcuts to assign a hotkey\n"
-        "  that runs: nixorb start --trigger"
+        "  that runs: nixorb trigger"
     )
     return False
 
 
 def _pynput_combo(hotkey: str) -> str:
+    """Convert a hotkey string to pynput format."""
     mapping = {
-        "ctrl":   "<ctrl>",
-        "alt":    "<alt>",
-        "shift":  "<shift>",
-        "meta":   "<cmd>",
-        "super":  "<cmd>",
-        "space":  "<space>",
+        "ctrl": "<ctrl>",
+        "alt": "<alt>",
+        "shift": "<shift>",
+        "meta": "<cmd>",
+        "super": "<cmd>",
+        "space": "<space>",
         "return": "<enter>",
-        "enter":  "<enter>",
-        "tab":    "<tab>",
-        "esc":    "<esc>",
+        "enter": "<enter>",
+        "tab": "<tab>",
+        "esc": "<esc>",
     }
     return "+".join(
         mapping.get(p.strip().lower(), p.strip().lower())
@@ -69,45 +71,40 @@ def _pynput_combo(hotkey: str) -> str:
     )
 
 
+class _Relay(QObject):
+    """Relay object for thread-safe hotkey callback."""
+
+    @Slot()
+    def fire(self) -> None:
+        log.info("🔔 Hotkey triggered")
+        bus.emit_sync(Event.HOTKEY_TRIGGERED, source="HotkeyManager")
+
+
 class HotkeyManager:
+    """Global hotkey manager using pynput."""
+
     def __init__(self, settings: Settings) -> None:
         self._hotkey = settings.hotkey
-        # A tiny persistent QObject living on the Qt/main thread purely so
-        # QMetaObject.invokeMethod has somewhere safe to land callbacks
-        # dispatched from pynput's own (non-QThread) listener thread.
-        from PySide6.QtCore import QObject, Slot
-
-        class _MainThreadRelay(QObject):
-            @Slot()
-            def fire(self_inner) -> None:
-                log.info("🔔 Hotkey triggered: %s", self._hotkey)
-                bus.emit_sync(Event.HOTKEY_TRIGGERED, source="HotkeyManager")
-
-        self._relay = _MainThreadRelay()
+        self._relay = _Relay()
 
     def start(self) -> None:
-        t = threading.Thread(target=self._run, daemon=True, name="nixorb-hotkey-init")
+        """Start the hotkey listener in a background thread."""
+        t = threading.Thread(target=self._run, daemon=True, name="hotkey")
         t.start()
 
     def _run(self) -> None:
+        """Run the pynput hotkey listener."""
         if not _ensure_display():
             return
 
         try:
-            from pynput import keyboard  # type: ignore[import]
-            from PySide6.QtCore import QMetaObject, Qt
+            from pynput import keyboard
+
             combo = _pynput_combo(self._hotkey)
             log.info("Hotkey: registering %s → pynput %s", self._hotkey, combo)
 
             def _activate() -> None:
-                # This runs on pynput's own listener thread, which Qt does
-                # not recognise as a QThread. QMetaObject.invokeMethod with
-                # a queued connection is Qt's documented thread-safe way to
-                # get from here to the main/Qt thread — unlike touching
-                # bus.emit_sync() (and therefore the qasync loop) directly
-                # from this thread, which is what previously produced
-                # "QSocketNotifier / QObject::startTimer: Can only be used
-                # with threads started with QThread" warnings.
+                # Thread-safe: use QMetaObject to dispatch to Qt main thread
                 QMetaObject.invokeMethod(
                     self._relay, "fire", Qt.ConnectionType.QueuedConnection
                 )
@@ -116,10 +113,11 @@ class HotkeyManager:
             listener.start()
             log.info("Hotkey listener active: %s", self._hotkey)
             listener.join()
+
         except Exception as exc:
             log.error("Hotkey setup failed: %s", exc)
             log.error(
-                "Workaround: double-click the orb, or use the tray icon to activate.\n"
+                "Workaround: double-click the orb, or use the tray icon.\n"
                 "For native Wayland hotkeys, set up a KDE shortcut that runs:\n"
-                "  nixorb start --trigger"
+                "  nixorb trigger"
             )

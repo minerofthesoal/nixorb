@@ -1,4 +1,4 @@
-"""nixorb/settings.py — Pydantic v2 settings with TOML persistence."""
+"""NixOrb settings — Pydantic v2 settings with TOML persistence."""
 from __future__ import annotations
 
 import os
@@ -17,61 +17,57 @@ def _config_path() -> Path:
 
 
 class Settings(BaseModel):
+    """NixOrb configuration — all user-tunable parameters."""
+
     # ── Orb UI ───────────────────────────────────────────────────── #
-    orb_x:    int | None = None
-    orb_y:    int | None = None
-    orb_size: int        = 120
-    hotkey:   str        = "Ctrl+Alt+Space"
+    orb_x: int | None = None
+    orb_y: int | None = None
+    orb_size: int = 120
+    orb_opacity: float = 1.0
+    hotkey: str = "Ctrl+Alt+Space"
 
     # ── ASR ──────────────────────────────────────────────────────── #
-    asr_model:        str      = "large-v3"
-    asr_language:     str      = ""
+    asr_model: str = "large-v3"
+    asr_language: str = "en"
     microphone_index: int | None = None
+    mic_sensitivity: float = 0.5
 
-    # ── LLM ──────────────────────────────────────────────────────── #
-    llm_backend:         str = "huggingface"
-    # Default: GLaDOS-voice StableLM for local inference
-    llm_model:           str = "torphix/stablelm-2-glados-v1"
-    # Fast assistant model (0.5 B — runs on CPU if needed)
-    llm_fast_model:      str = "google/gemma-4-31B-it-assistant"
-    llm_base_url:        str = "https://api.openai.com/v1"
-    openai_api_key:      str = ""
-    hf_token:            str = ""
-    local_model_path:    str = ""
-    fallback_model_path: str = ""
-    llm_vram_mb:         int = 4096
-    llm_max_new_tokens:  int = 512
+    # ── LLM (Local-only: Ollama) ─────────────────────────────────── #
+    llm_backend: str = "ollama"
+    llm_model: str = "llama3.2"
+    ollama_host: str = "http://localhost:11434"
+    llm_system_prompt: str = (
+        "You are NixOrb, a helpful AI assistant running on Arch Linux with KDE Plasma 6. "
+        "You have a witty, slightly sardonic personality like GLaDOS. "
+        "Keep responses concise unless asked for detail. "
+        "You can execute bash commands, search the web, capture the screen, and remember conversations."
+    )
+    llm_max_tokens: int = 512
+    llm_temperature: float = 0.7
 
     # ── TTS ──────────────────────────────────────────────────────── #
-    # "glados" uses a GLaDOS-flavoured voice with an automatic SpeechT5
-    # fallback baked in, so it works out of the box with no extra setup.
-    tts_backend:  str = "glados"
-    # NOTE: torphix/stablelm-2-glados-v1 is a *text* (StableLM2) model, not a
-    # TTS model — it cannot be loaded by transformers' text-to-speech
-    # pipeline. Both the "glados" and "huggingface" backends detect this and
-    # fall back to microsoft/speecht5_tts automatically, but the default
-    # here now points at a real TTS-capable repo so first-run works.
-    tts_hf_repo:  str = "microsoft/speecht5_tts"
-    tts_voice:    str = "alloy"
+    tts_backend: str = "piper"
+    tts_voice: str = "en_US-lessac-medium"
+    tts_speed: float = 1.0
+    tts_volume: float = 1.0
 
-    # ── Vision ───────────────────────────────────────────────────── #
-    vision_enabled:   bool = True
-    # CogFlorence for captioning; Qwen3.5 for full vision+LLM
-    vision_model:     str  = "thwri/CogFlorence-2.2-Large"
-    vlm_model:        str  = "Qwen/Qwen3.5-4B"
-    use_vlm:          bool = False   # True = use Qwen VLM; False = CogFlorence
-
-    # ── Web search ───────────────────────────────────────────────── #
-    web_search_enabled:     bool = True
-    web_search_max_results: int  = 4
+    # ── Wake Word ────────────────────────────────────────────────── #
+    wake_word_enabled: bool = True
+    wake_word_model: str = "hey_nixorb"
+    wake_word_sensitivity: float = 0.5
 
     # ── Features ─────────────────────────────────────────────────── #
-    wake_word_enabled:            bool = False
-    wake_word_model:              str  = "hey_jarvis_v0.1"
-    screen_capture_enabled:       bool = True
-    offline_fallback_enabled:     bool = True
-    require_action_confirmation:  bool = True
-    clipboard_enabled:            bool = True
+    screen_capture_enabled: bool = True
+    web_search_enabled: bool = True
+    clipboard_enabled: bool = True
+    require_action_confirmation: bool = True
+    memory_enabled: bool = True
+    plugins_enabled: bool = True
+
+    # ── VRAM ─────────────────────────────────────────────────────── #
+    vram_total_mb: int = 8192
+    vram_system_reserve_mb: int = 512
+    vram_safety_buffer_mb: int = 256
 
     # ── Paths ────────────────────────────────────────────────────── #
     plugin_dir: str = str(Path.home() / ".local" / "share" / "nixorb" / "plugins")
@@ -79,6 +75,7 @@ class Settings(BaseModel):
 
     @classmethod
     def load(cls) -> Settings:
+        """Load settings from config file, creating defaults if missing."""
         p = _config_path()
         p.parent.mkdir(parents=True, exist_ok=True)
         if p.exists():
@@ -94,6 +91,7 @@ class Settings(BaseModel):
         return cls()
 
     def save(self) -> None:
+        """Persist current settings to config file."""
         p = _config_path()
         p.parent.mkdir(parents=True, exist_ok=True)
         data = {k: v for k, v in self.model_dump().items() if v is not None}
