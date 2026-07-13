@@ -1,12 +1,7 @@
-"""
-nixorb/core/event_bus.py — Central asyncio EventBus.
+"""NixOrb event bus — central async event system.
 
-BUG FIXES:
-  - PriorityQueue tiebreaker counter (Python compares tuple elements in order;
-    without a counter two equal-priority payloads would compare EventPayload
-    objects which have no __lt__, raising TypeError).
-  - emit_sync() now guards against None _loop gracefully.
-  - _ensure_init() called lazily so the singleton works across test resets.
+All communication between modules happens through typed events on this bus.
+This eliminates direct coupling between UI, ASR, LLM, TTS, and other components.
 """
 from __future__ import annotations
 
@@ -15,114 +10,134 @@ import itertools
 import logging
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, cast
 
 log = logging.getLogger(__name__)
 
-_counter = itertools.count()   # tiebreaker — never compared as EventPayload
+# Global tiebreaker counter — prevents PriorityQueue comparison errors
+counter = itertools.count()
 
 
 class Event(Enum):
-    HOTKEY_TRIGGERED    = auto()
-    WAKE_WORD_DETECTED  = auto()
-    RECORDING_START     = auto()
-    RECORDING_STOP      = auto()
-    TRANSCRIPT_READY    = auto()
-    LLM_THINKING        = auto()
-    LLM_CHUNK           = auto()
-    LLM_DONE            = auto()
-    LLM_ERROR           = auto()
-    TTS_START           = auto()
-    TTS_AUDIO_CHUNK     = auto()
-    TTS_DONE            = auto()
-    ORB_IDLE            = auto()
-    ORB_LISTENING       = auto()
-    ORB_THINKING        = auto()
-    ORB_SPEAKING        = auto()
-    ORB_ERROR           = auto()
-    ACTION_REQUESTED    = auto()
-    ACTION_RESULT       = auto()
-    SCREEN_CAPTURE_REQ  = auto()
+    """All events that can flow through the NixOrb event bus."""
+
+    # Trigger events
+    HOTKEY_TRIGGERED = auto()
+    WAKE_WORD_DETECTED = auto()
+    ORB_CLICKED = auto()
+
+    # Recording / ASR
+    RECORDING_START = auto()
+    RECORDING_STOP = auto()
+    MIC_LEVEL = auto()
+    MIC_MUTED = auto()
+    TRANSCRIPT_READY = auto()
+    ASR_READY = auto()
+    ASR_ERROR = auto()
+
+    # LLM
+    LLM_START = auto()
+    LLM_CHUNK = auto()
+    LLM_DONE = auto()
+    LLM_ERROR = auto()
+
+    # TTS
+    TTS_START = auto()
+    TTS_AUDIO_CHUNK = auto()
+    TTS_DONE = auto()
+    TTS_ERROR = auto()
+
+    # Orb state
+    ORB_IDLE = auto()
+    ORB_LISTENING = auto()
+    ORB_THINKING = auto()
+    ORB_SPEAKING = auto()
+    ORB_ERROR = auto()
+
+    # Actions
+    ACTION_REQUESTED = auto()
+    ACTION_CONFIRMED = auto()
+    ACTION_DENIED = auto()
+    ACTION_RESULT = auto()
+
+    # Screen / vision
+    SCREEN_CAPTURE_REQ = auto()
     SCREEN_CAPTURE_DONE = auto()
-    VRAM_PRESSURE       = auto()
-    SETTINGS_CHANGED    = auto()
-    SHUTDOWN            = auto()
-    LOG                 = auto()
-    MIC_MUTED           = auto()
-    MIC_LEVEL           = auto()
+
+    # VRAM
+    VRAM_PRESSURE = auto()
+
+    # Settings
+    SETTINGS_CHANGED = auto()
+
+    # Lifecycle
+    SHUTDOWN = auto()
+
+    # Logging
+    LOG = auto()
+
+    # Plugins
+    PLUGIN_LOADED = auto()
 
 
 @dataclass
 class EventPayload:
-    event:    Event
-    data:     Any  = None
-    source:   str  = "unknown"
-    priority: int  = 5
+    """Payload delivered with each event."""
+
+    event: Event
+    data: dict[str, Any] = field(default_factory=dict)
+    source: str = "unknown"
+    priority: int = 5
 
 
-_Handler = Callable[[EventPayload], Awaitable[None]]
+# Type alias for event handlers
+Handler = Callable[[EventPayload], Awaitable[None]]
 
 
 class EventBus:
+    """Singleton async event bus with priority queue dispatch."""
+
     _instance: EventBus | None = None
-    _initialised: bool
-    _handlers: dict[Event, list[tuple[int, _Handler]]]
-    _wildcard: list[tuple[int, _Handler]]
-    _queue: asyncio.PriorityQueue[tuple[int, int, EventPayload]]
-    _loop: asyncio.AbstractEventLoop | None
-    _running: bool
 
     def __new__(cls) -> EventBus:
         if cls._instance is None:
             obj = cast(EventBus, super().__new__(cls))
-            obj._initialised = False
+            obj._initialized = False
             cls._instance = obj
         return cls._instance
 
     def _ensure_init(self) -> None:
-        if self._initialised:
+        if self._initialized:
             return
-        self._reset_state()
-        self._initialised = True
-
-    def _reset_state(self) -> None:
-        self._handlers: dict[Event, list[tuple[int, _Handler]]] = defaultdict(list)
-        self._wildcard:  list[tuple[int, _Handler]] = []
+        self._handlers: dict[Event, list[tuple[int, Handler]]] = defaultdict(list)
+        self._wildcard: list[tuple[int, Handler]] = []
         self._queue: asyncio.PriorityQueue[tuple[int, int, EventPayload]] = (
             asyncio.PriorityQueue()
         )
-        self._loop:    asyncio.AbstractEventLoop | None = None
-        self._running: bool = False
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._running = False
+        self._initialized = True
 
-    def reset_for_tests(self) -> None:
-        """
-        Clear all handlers/queue/loop state **in place**, on this same
-        object, instead of swapping in a new instance.
-
-        This matters because many modules do
-        ``from nixorb.core.event_bus import bus`` at *import time*, which
-        binds a direct reference to whatever object was the singleton at
-        that moment. If a test fixture did ``EventBus._instance = None``
-        and then ``EventBus()`` to get a "fresh" bus, it would create a
-        second, disconnected object — every already-imported module would
-        keep talking to the old one, and events emitted on the "fresh" bus
-        in a test would never reach handlers subscribed via those modules
-        (or vice versa). Resetting state on the *same* object keeps every
-        existing reference valid.
-        """
-        self._reset_state()
-        self._initialised = True
+    def reset(self) -> None:
+        """Reset all state — useful for tests."""
+        self._handlers = defaultdict(list)
+        self._wildcard = []
+        self._queue = asyncio.PriorityQueue()
+        self._loop = None
+        self._running = False
 
     async def start(self) -> None:
+        """Start the event dispatch loop."""
         self._ensure_init()
-        self._loop    = asyncio.get_running_loop()
+        self._loop = asyncio.get_running_loop()
         self._running = True
-        asyncio.create_task(self._dispatch_loop(), name="nixorb-event-bus")
+        asyncio.create_task(self._dispatch_loop(), name="event-bus")
         log.info("EventBus started")
 
     async def _dispatch_loop(self) -> None:
+        """Main dispatch loop — runs forever until stopped."""
         while self._running:
             try:
                 _pri, _seq, payload = await asyncio.wait_for(
@@ -133,12 +148,12 @@ class EventBus:
             except asyncio.CancelledError:
                 break
 
-            handlers = (
-                list(self._handlers.get(payload.event, [])) + list(self._wildcard)
+            handlers = list(self._handlers.get(payload.event, [])) + list(
+                self._wildcard
             )
             handlers.sort(key=lambda t: t[0])
 
-            for _hpri, handler in handlers:
+            for _priority, handler in handlers:
                 try:
                     await handler(payload)
                 except Exception:
@@ -147,6 +162,7 @@ class EventBus:
             self._queue.task_done()
 
     async def stop(self) -> None:
+        """Stop the event bus gracefully."""
         self._running = False
         try:
             await asyncio.wait_for(self._queue.join(), timeout=3.0)
@@ -156,45 +172,53 @@ class EventBus:
 
     async def emit(
         self,
-        event:    Event,
-        data:     Any = None,
-        source:   str = "unknown",
+        event: Event,
+        data: dict[str, Any] | None = None,
+        source: str = "unknown",
         priority: int = 5,
     ) -> None:
+        """Emit an event asynchronously."""
         self._ensure_init()
-        payload = EventPayload(event=event, data=data, source=source, priority=priority)
-        await self._queue.put((priority, next(_counter), payload))
+        payload = EventPayload(
+            event=event, data=data or {}, source=source, priority=priority
+        )
+        await self._queue.put((priority, next(counter), payload))
 
     def emit_sync(
         self,
-        event:    Event,
-        data:     Any = None,
-        source:   str = "unknown",
+        event: Event,
+        data: dict[str, Any] | None = None,
+        source: str = "unknown",
         priority: int = 5,
     ) -> None:
+        """Emit an event synchronously from any thread."""
         self._ensure_init()
         loop = self._loop
         if loop is None or not loop.is_running():
-            log.warning("emit_sync: loop not running — event %s dropped", event)
+            log.warning("emit_sync: loop not running — event %s dropped", event.name)
             return
-        payload = EventPayload(event=event, data=data, source=source, priority=priority)
+        payload = EventPayload(
+            event=event, data=data or {}, source=source, priority=priority
+        )
         asyncio.run_coroutine_threadsafe(
-            self._queue.put((priority, next(_counter), payload)), loop
+            self._queue.put((priority, next(counter), payload)), loop
         )
 
     def subscribe(
         self,
-        event:    Event | None,
-        handler:  _Handler,
+        event: Event | None,
+        handler: Handler,
         priority: int = 5,
     ) -> None:
+        """Subscribe to an event. Use event=None for wildcard."""
         self._ensure_init()
         if event is None:
             self._wildcard.append((priority, handler))
         else:
             self._handlers[event].append((priority, handler))
 
-    def unsubscribe(self, event: Event | None, handler: _Handler) -> None:
+    def unsubscribe(self, event: Event | None, handler: Handler) -> None:
+        """Unsubscribe a handler from an event."""
         self._ensure_init()
         if event is None:
             self._wildcard = [(p, h) for p, h in self._wildcard if h is not handler]
@@ -204,4 +228,5 @@ class EventBus:
             ]
 
 
+# Global singleton instance
 bus = EventBus()
