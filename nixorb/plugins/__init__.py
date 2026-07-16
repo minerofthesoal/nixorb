@@ -1,1 +1,1 @@
-"""NixOrb plugin system — drop-in Python tool extensions.""
+"""NixOrb plugin system — drop-in Python tool extensions."""
