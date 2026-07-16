@@ -1,1 +1,1 @@
-"""NixOrb utility modules.""
+"""NixOrb utility modules."""
