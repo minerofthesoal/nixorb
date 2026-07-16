@@ -1,1 +1,1 @@
-"""NixOrb vision — screen capture and description.""
+"""NixOrb vision — screen capture and description."""
