@@ -17,7 +17,6 @@ import asyncio
 import logging
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 import typer
@@ -76,7 +75,7 @@ def ask(
             typer.echo(f"\n🤖 {response}")
         except Exception as exc:
             typer.echo(f"❌ Error: {exc}", err=True)
-            raise typer.Exit(1)
+            raise typer.Exit(1) from exc
         finally:
             await llm.close()
 

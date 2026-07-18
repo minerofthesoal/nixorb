@@ -6,7 +6,6 @@ for injection into the LLM prompt context.
 from __future__ import annotations
 
 import logging
-from urllib.parse import quote_plus
 
 import aiohttp
 

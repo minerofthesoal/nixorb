@@ -20,7 +20,6 @@ import logging
 import os
 import re
 import sys
-from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -91,8 +90,14 @@ def _select_qt_platform() -> None:
 
 async def _async_main(settings, app) -> None:
     """Main async orchestrator — initializes all components."""
+    from PySide6.QtWidgets import QSystemTrayIcon
+
     from nixorb.core.event_bus import Event, bus
     from nixorb.core.vram_manager import vram
+    from nixorb.memory.vector_store import VectorMemory
+    from nixorb.ui.orb_window import OrbWindow
+    from nixorb.ui.settings_window import SettingsWindow
+    from nixorb.ui.tray_icon import NixOrbTray
     from nixorb.utils.logger import setup_logging
 
     setup_logging(log_to_file=True)
@@ -105,11 +110,7 @@ async def _async_main(settings, app) -> None:
     asyncio.get_running_loop().call_soon_threadsafe(lambda: None)
 
     # ── Initialize UI ────────────────────────────────────────────── #
-    from nixorb.ui.settings_window import SettingsWindow
     SettingsWindow.init_settings = lambda s: None  # type: ignore
-
-    from nixorb.ui.tray_icon import NixOrbTray
-    from PySide6.QtWidgets import QSystemTrayIcon
 
     if QSystemTrayIcon.isSystemTrayAvailable():
         tray = NixOrbTray(settings, app)
@@ -118,7 +119,6 @@ async def _async_main(settings, app) -> None:
     else:
         log.warning("Tray: system tray not available")
 
-    from nixorb.ui.orb_window import OrbWindow
     orb = OrbWindow(settings, app)
     orb.show()
     orb.log_visibility()
@@ -127,7 +127,6 @@ async def _async_main(settings, app) -> None:
     await vram.start_monitor(poll_interval=6.0)
 
     # Memory
-    from nixorb.memory.vector_store import VectorMemory
     memory = VectorMemory(settings.memory_dir)
 
     # ASR (Whisper)
@@ -452,7 +451,7 @@ def main() -> None:
     app.setApplicationName("NixOrb")
     app.setApplicationVersion(__import__("nixorb").__version__)
     app.setOrganizationName("NixOrb")
-    setattr(app, "_quit_on_last_window_closed", False)
+    app._quit_on_last_window_closed = False  # type: ignore[attr-defined]
     app.setQuitOnLastWindowClosed(False)
 
     # qasync: integrate asyncio with Qt event loop

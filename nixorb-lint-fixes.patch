@@ -1,0 +1,349 @@
+diff --git a/nixorb/action/executor.py b/nixorb/action/executor.py
+index 211a7d7..cd93a98 100644
+--- a/nixorb/action/executor.py
++++ b/nixorb/action/executor.py
+@@ -9,7 +9,6 @@ import asyncio
+ import logging
+ import re
+ import shutil
+-import subprocess
+ import uuid
+ from dataclasses import dataclass
+ from typing import TYPE_CHECKING
+@@ -83,7 +82,7 @@ class ActionExecutor:
+         try:
+             # Wait for confirmation
+             approved = await asyncio.wait_for(future, timeout=60.0)
+-        except asyncio.TimeoutError:
++        except TimeoutError:
+             log.warning("Action: confirmation timeout for '%s'", command)
+             return ActionResult(command=command, approved=False)
+ 
+@@ -119,7 +118,7 @@ class ActionExecutor:
+             )
+             return result
+ 
+-        except asyncio.TimeoutError:
++        except TimeoutError:
+             log.error("Action: command timed out '%s'", command)
+             proc.kill()
+             return ActionResult(
+diff --git a/nixorb/asr/whisper_engine.py b/nixorb/asr/whisper_engine.py
+index 21a4464..b85336b 100644
+--- a/nixorb/asr/whisper_engine.py
++++ b/nixorb/asr/whisper_engine.py
+@@ -8,7 +8,6 @@ from __future__ import annotations
+ import asyncio
+ import io
+ import logging
+-import time
+ from typing import TYPE_CHECKING
+ 
+ import numpy as np
+diff --git a/nixorb/cli.py b/nixorb/cli.py
+index 2c3fb8c..ca37946 100644
+--- a/nixorb/cli.py
++++ b/nixorb/cli.py
+@@ -17,7 +17,6 @@ import asyncio
+ import logging
+ import shutil
+ import subprocess
+-import sys
+ from pathlib import Path
+ 
+ import typer
+@@ -76,7 +75,7 @@ def ask(
+             typer.echo(f"\n🤖 {response}")
+         except Exception as exc:
+             typer.echo(f"❌ Error: {exc}", err=True)
+-            raise typer.Exit(1)
++            raise typer.Exit(1) from exc
+         finally:
+             await llm.close()
+ 
+diff --git a/nixorb/llm/__init__.py b/nixorb/llm/__init__.py
+index cb06805..9ec913b 100644
+--- a/nixorb/llm/__init__.py
++++ b/nixorb/llm/__init__.py
+@@ -1 +1 @@
+-"""NixOrb LLM — local language model via Ollama."""
+\ No newline at end of file
++"""NixOrb LLM — local language model via Ollama."""
+diff --git a/nixorb/main.py b/nixorb/main.py
+index 17ec943..8a476bd 100644
+--- a/nixorb/main.py
++++ b/nixorb/main.py
+@@ -20,7 +20,6 @@ import logging
+ import os
+ import re
+ import sys
+-from typing import Any
+ 
+ log = logging.getLogger(__name__)
+ 
+@@ -91,8 +90,14 @@ def _select_qt_platform() -> None:
+ 
+ async def _async_main(settings, app) -> None:
+     """Main async orchestrator — initializes all components."""
++    from PySide6.QtWidgets import QSystemTrayIcon
++
+     from nixorb.core.event_bus import Event, bus
+     from nixorb.core.vram_manager import vram
++    from nixorb.memory.vector_store import VectorMemory
++    from nixorb.ui.orb_window import OrbWindow
++    from nixorb.ui.settings_window import SettingsWindow
++    from nixorb.ui.tray_icon import NixOrbTray
+     from nixorb.utils.logger import setup_logging
+ 
+     setup_logging(log_to_file=True)
+@@ -105,12 +110,8 @@ async def _async_main(settings, app) -> None:
+     asyncio.get_running_loop().call_soon_threadsafe(lambda: None)
+ 
+     # ── Initialize UI ────────────────────────────────────────────── #
+-    from nixorb.ui.settings_window import SettingsWindow
+     SettingsWindow.init_settings = lambda s: None  # type: ignore
+ 
+-    from nixorb.ui.tray_icon import NixOrbTray
+-    from PySide6.QtWidgets import QSystemTrayIcon
+-
+     if QSystemTrayIcon.isSystemTrayAvailable():
+         tray = NixOrbTray(settings, app)
+         tray.show()
+@@ -118,7 +119,6 @@ async def _async_main(settings, app) -> None:
+     else:
+         log.warning("Tray: system tray not available")
+ 
+-    from nixorb.ui.orb_window import OrbWindow
+     orb = OrbWindow(settings, app)
+     orb.show()
+     orb.log_visibility()
+@@ -127,7 +127,6 @@ async def _async_main(settings, app) -> None:
+     await vram.start_monitor(poll_interval=6.0)
+ 
+     # Memory
+-    from nixorb.memory.vector_store import VectorMemory
+     memory = VectorMemory(settings.memory_dir)
+ 
+     # ASR (Whisper)
+@@ -452,7 +451,7 @@ def main() -> None:
+     app.setApplicationName("NixOrb")
+     app.setApplicationVersion(__import__("nixorb").__version__)
+     app.setOrganizationName("NixOrb")
+-    setattr(app, "_quit_on_last_window_closed", False)
++    app._quit_on_last_window_closed = False  # type: ignore[attr-defined]
+     app.setQuitOnLastWindowClosed(False)
+ 
+     # qasync: integrate asyncio with Qt event loop
+diff --git a/nixorb/memory/vector_store.py b/nixorb/memory/vector_store.py
+index 7545d31..8fc9676 100644
+--- a/nixorb/memory/vector_store.py
++++ b/nixorb/memory/vector_store.py
+@@ -6,7 +6,6 @@ Injects relevant past context into LLM prompts.
+ from __future__ import annotations
+ 
+ import logging
+-import re
+ import time
+ from pathlib import Path
+ from typing import Any
+diff --git a/nixorb/plugins/__init__.py b/nixorb/plugins/__init__.py
+index 41a68f4..d41ea13 100644
+--- a/nixorb/plugins/__init__.py
++++ b/nixorb/plugins/__init__.py
+@@ -1 +1 @@
+-"""NixOrb plugin system — drop-in Python tool extensions."""
+\ No newline at end of file
++"""NixOrb plugin system — drop-in Python tool extensions."""
+diff --git a/nixorb/plugins/loader.py b/nixorb/plugins/loader.py
+index 0227ecd..ac4d890 100644
+--- a/nixorb/plugins/loader.py
++++ b/nixorb/plugins/loader.py
+@@ -7,12 +7,12 @@ tools via function calling.
+ from __future__ import annotations
+ 
+ import importlib.util
+-import inspect
+ import logging
+ import sys
++from collections.abc import Callable
+ from pathlib import Path
+ from types import ModuleType
+-from typing import Any, Callable
++from typing import Any
+ 
+ from nixorb.core.event_bus import Event, bus
+ 
+@@ -72,7 +72,7 @@ class PluginLoader:
+                 raise AttributeError(f"Plugin {name} missing required attribute: {attr}")
+ 
+         # Register tool functions
+-        tool_def = getattr(module, "TOOL_DEFINITION")
++        tool_def = module.TOOL_DEFINITION
+         func_name = tool_def.get("function", {}).get("name", name)
+ 
+         if hasattr(module, func_name):
+@@ -124,7 +124,7 @@ class PluginLoader:
+     def get_tool_definitions(self) -> list[dict[str, Any]]:
+         """Get all tool definitions for LLM function calling."""
+         tools = []
+-        for name, module in self._plugins.items():
++        for _name, module in self._plugins.items():
+             if hasattr(module, "TOOL_DEFINITION"):
+                 tools.append(module.TOOL_DEFINITION)
+         return tools
+diff --git a/nixorb/ui/confirm_dialog.py b/nixorb/ui/confirm_dialog.py
+index 8092f28..c9c9c9e 100644
+--- a/nixorb/ui/confirm_dialog.py
++++ b/nixorb/ui/confirm_dialog.py
+@@ -9,13 +9,10 @@ import asyncio
+ import logging
+ from typing import Any
+ 
+-from PySide6.QtCore import Qt
+ from PySide6.QtWidgets import (
+-    QApplication,
+     QDialog,
+     QHBoxLayout,
+     QLabel,
+-    QMessageBox,
+     QPushButton,
+     QTextEdit,
+     QVBoxLayout,
+@@ -63,16 +60,11 @@ def _is_dangerous(command: str) -> bool:
+     cmd_lower = command.lower().strip()
+ 
+     # Hard denylist
+-    for denied in HARD_DENYLIST:
+-        if denied in cmd_lower:
+-            return True
++    if any(denied in cmd_lower for denied in HARD_DENYLIST):
++        return True
+ 
+     # Confirmation required
+-    for pattern in REQUIRE_CONFIRM:
+-        if pattern in cmd_lower:
+-            return True
+-
+-    return False
++    return any(pattern in cmd_lower for pattern in REQUIRE_CONFIRM)
+ 
+ 
+ def _should_confirm(command: str) -> bool:
+@@ -205,7 +197,7 @@ def register_confirmation_handler() -> None:
+         # Wait for user response
+         try:
+             approved = await asyncio.wait_for(future, timeout=60.0)
+-        except asyncio.TimeoutError:
++        except TimeoutError:
+             log.warning("Confirm: timeout waiting for user response")
+             approved = False
+ 
+diff --git a/nixorb/ui/orb_window.py b/nixorb/ui/orb_window.py
+index e31fa1b..fcda749 100644
+--- a/nixorb/ui/orb_window.py
++++ b/nixorb/ui/orb_window.py
+@@ -14,6 +14,7 @@ from __future__ import annotations
+ import logging
+ 
+ from PySide6.QtCore import (
++    Property,
+     QObject,
+     QPointF,
+     QSize,
+diff --git a/nixorb/ui/tray_icon.py b/nixorb/ui/tray_icon.py
+index e3818fc..b6627ca 100644
+--- a/nixorb/ui/tray_icon.py
++++ b/nixorb/ui/tray_icon.py
+@@ -3,6 +3,7 @@ from __future__ import annotations
+ 
+ import logging
+ 
++from PySide6.QtCore import Qt
+ from PySide6.QtGui import QAction, QIcon
+ from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
+ 
+diff --git a/nixorb/utils/__init__.py b/nixorb/utils/__init__.py
+index 59a3591..c942709 100644
+--- a/nixorb/utils/__init__.py
++++ b/nixorb/utils/__init__.py
+@@ -1 +1 @@
+-"""NixOrb utility modules."""
+\ No newline at end of file
++"""NixOrb utility modules."""
+diff --git a/nixorb/utils/paths.py b/nixorb/utils/paths.py
+index e25f831..2e0c667 100644
+--- a/nixorb/utils/paths.py
++++ b/nixorb/utils/paths.py
+@@ -1,8 +1,6 @@
+ """NixOrb path utilities — find assets, config, data directories."""
+ from __future__ import annotations
+ 
+-import os
+-import sys
+ from pathlib import Path
+ 
+ 
+diff --git a/nixorb/utils/web_search.py b/nixorb/utils/web_search.py
+index 56e9e5f..823e582 100644
+--- a/nixorb/utils/web_search.py
++++ b/nixorb/utils/web_search.py
+@@ -6,7 +6,6 @@ for injection into the LLM prompt context.
+ from __future__ import annotations
+ 
+ import logging
+-from urllib.parse import quote_plus
+ 
+ import aiohttp
+ 
+diff --git a/nixorb/vision/__init__.py b/nixorb/vision/__init__.py
+index 4309b90..8368e49 100644
+--- a/nixorb/vision/__init__.py
++++ b/nixorb/vision/__init__.py
+@@ -1 +1 @@
+-"""NixOrb vision — screen capture and description."""
+\ No newline at end of file
++"""NixOrb vision — screen capture and description."""
+diff --git a/nixorb/vision/screen_capture.py b/nixorb/vision/screen_capture.py
+index 562abe9..61be3b7 100644
+--- a/nixorb/vision/screen_capture.py
++++ b/nixorb/vision/screen_capture.py
+@@ -87,7 +87,7 @@ class ScreenCapture:
+                 log.error("ScreenCapture: region capture failed: %s", stderr.decode())
+                 return None
+ 
+-        except asyncio.TimeoutError:
++        except TimeoutError:
+             log.warning("ScreenCapture: region selection timed out")
+             return None
+         except Exception as exc:
+diff --git a/tests/test_core.py b/tests/test_core.py
+index c4b040e..3096fdd 100644
+--- a/tests/test_core.py
++++ b/tests/test_core.py
+@@ -5,15 +5,13 @@ Run with: pytest tests/test_core.py -v
+ from __future__ import annotations
+ 
+ import asyncio
+-import tempfile
+-from pathlib import Path
+ 
+ import pytest
+ 
+ from nixorb.core.event_bus import Event, EventBus, bus
+-from nixorb.core.vram_manager import VRAMManager, ModelPriority, vram
+-from nixorb.settings import Settings
++from nixorb.core.vram_manager import ModelPriority, vram
+ from nixorb.memory.vector_store import VectorMemory
++from nixorb.settings import Settings
+ 
+ 
+ class TestSettings:
+@@ -261,7 +259,7 @@ class TestActionExecutor:
+         assert len(actions) == 0
+ 
+     def test_dangerous_command_detection(self):
+-        from nixorb.ui.confirm_dialog import _is_dangerous, REQUIRE_CONFIRM, HARD_DENYLIST
++        from nixorb.ui.confirm_dialog import _is_dangerous
+ 
+         # Test hard denylist
+         assert _is_dangerous("rm -rf /") is True

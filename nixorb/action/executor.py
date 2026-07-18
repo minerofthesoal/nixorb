@@ -9,7 +9,6 @@ import asyncio
 import logging
 import re
 import shutil
-import subprocess
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -83,7 +82,7 @@ class ActionExecutor:
         try:
             # Wait for confirmation
             approved = await asyncio.wait_for(future, timeout=60.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             log.warning("Action: confirmation timeout for '%s'", command)
             return ActionResult(command=command, approved=False)
 
@@ -119,7 +118,7 @@ class ActionExecutor:
             )
             return result
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             log.error("Action: command timed out '%s'", command)
             proc.kill()
             return ActionResult(

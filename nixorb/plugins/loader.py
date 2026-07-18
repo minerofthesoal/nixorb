@@ -7,12 +7,12 @@ tools via function calling.
 from __future__ import annotations
 
 import importlib.util
-import inspect
 import logging
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Callable
+from typing import Any
 
 from nixorb.core.event_bus import Event, bus
 
@@ -72,7 +72,7 @@ class PluginLoader:
                 raise AttributeError(f"Plugin {name} missing required attribute: {attr}")
 
         # Register tool functions
-        tool_def = getattr(module, "TOOL_DEFINITION")
+        tool_def = module.TOOL_DEFINITION
         func_name = tool_def.get("function", {}).get("name", name)
 
         if hasattr(module, func_name):
@@ -124,7 +124,7 @@ class PluginLoader:
     def get_tool_definitions(self) -> list[dict[str, Any]]:
         """Get all tool definitions for LLM function calling."""
         tools = []
-        for name, module in self._plugins.items():
+        for _name, module in self._plugins.items():
             if hasattr(module, "TOOL_DEFINITION"):
                 tools.append(module.TOOL_DEFINITION)
         return tools

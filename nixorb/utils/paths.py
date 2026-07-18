@@ -1,8 +1,6 @@
 """NixOrb path utilities — find assets, config, data directories."""
 from __future__ import annotations
 
-import os
-import sys
 from pathlib import Path
 
 

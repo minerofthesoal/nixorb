@@ -87,7 +87,7 @@ class ScreenCapture:
                 log.error("ScreenCapture: region capture failed: %s", stderr.decode())
                 return None
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             log.warning("ScreenCapture: region selection timed out")
             return None
         except Exception as exc:

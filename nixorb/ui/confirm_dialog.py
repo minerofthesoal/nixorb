@@ -9,13 +9,10 @@ import asyncio
 import logging
 from typing import Any
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QApplication,
     QDialog,
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QPushButton,
     QTextEdit,
     QVBoxLayout,
@@ -63,16 +60,11 @@ def _is_dangerous(command: str) -> bool:
     cmd_lower = command.lower().strip()
 
     # Hard denylist
-    for denied in HARD_DENYLIST:
-        if denied in cmd_lower:
-            return True
+    if any(denied in cmd_lower for denied in HARD_DENYLIST):
+        return True
 
     # Confirmation required
-    for pattern in REQUIRE_CONFIRM:
-        if pattern in cmd_lower:
-            return True
-
-    return False
+    return any(pattern in cmd_lower for pattern in REQUIRE_CONFIRM)
 
 
 def _should_confirm(command: str) -> bool:
@@ -205,7 +197,7 @@ def register_confirmation_handler() -> None:
         # Wait for user response
         try:
             approved = await asyncio.wait_for(future, timeout=60.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             log.warning("Confirm: timeout waiting for user response")
             approved = False
 

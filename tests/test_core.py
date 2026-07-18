@@ -5,15 +5,13 @@ Run with: pytest tests/test_core.py -v
 from __future__ import annotations
 
 import asyncio
-import tempfile
-from pathlib import Path
 
 import pytest
 
 from nixorb.core.event_bus import Event, EventBus, bus
-from nixorb.core.vram_manager import VRAMManager, ModelPriority, vram
-from nixorb.settings import Settings
+from nixorb.core.vram_manager import ModelPriority, vram
 from nixorb.memory.vector_store import VectorMemory
+from nixorb.settings import Settings
 
 
 class TestSettings:
@@ -261,7 +259,7 @@ class TestActionExecutor:
         assert len(actions) == 0
 
     def test_dangerous_command_detection(self):
-        from nixorb.ui.confirm_dialog import _is_dangerous, REQUIRE_CONFIRM, HARD_DENYLIST
+        from nixorb.ui.confirm_dialog import _is_dangerous
 
         # Test hard denylist
         assert _is_dangerous("rm -rf /") is True
