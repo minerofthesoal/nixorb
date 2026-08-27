@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -16,12 +17,13 @@ log = logging.getLogger(__name__)
 class VectorMemory:
     """Vector-based memory for conversation context retrieval."""
 
-    def __init__(self, memory_dir: str | None = None) -> None:
-        self._memory_dir = memory_dir or str(
-            Path.home() / ".local" / "share" / "nixorb" / "memory"
+    def __init__(self, memory_dir: str | Path | None = None) -> None:
+        self._memory_dir = str(
+            memory_dir
+            or Path.home() / ".local" / "share" / "nixorb" / "memory"
         )
-        self._client = None
-        self._collection = None
+        self._client: Any = None
+        self._collection: Any = None
         self._embedding_available = False
 
         self._init_chroma()
@@ -30,9 +32,16 @@ class VectorMemory:
         """Initialize ChromaDB client."""
         try:
             import chromadb
+            from chromadb.config import Settings as ChromaSettings
 
             Path(self._memory_dir).mkdir(parents=True, exist_ok=True)
-            self._client = chromadb.PersistentClient(path=self._memory_dir)
+            self._client = chromadb.PersistentClient(
+                path=self._memory_dir,
+                # Chroma phones home to posthog on startup by default; on a
+                # firewalled or offline machine that turns NixOrb's launch
+                # into a multi-second stall for a local-only assistant.
+                settings=ChromaSettings(anonymized_telemetry=False),
+            )
             self._collection = self._client.get_or_create_collection(
                 name="conversations",
                 metadata={"description": "NixOrb conversation memory"},
@@ -42,15 +51,17 @@ class VectorMemory:
         except ImportError:
             log.warning("Memory: chromadb not installed — memory disabled")
         except Exception as exc:
-            log.error("Memory: ChromaDB init failed: %s", exc)
+            log.error("Memory: ChromaDB init failed — memory disabled: %s", exc)
 
     def store(self, text: str, metadata: dict[str, Any] | None = None) -> bool:
         """Store a text entry in memory."""
         if not self._embedding_available or not self._collection:
             return False
+        if not text or not text.strip():
+            return False
 
         try:
-            doc_id = f"entry_{int(time.time() * 1000)}"
+            doc_id = f"entry_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
             meta = metadata or {}
             meta["timestamp"] = time.time()
 
@@ -63,6 +74,14 @@ class VectorMemory:
         except Exception as exc:
             log.error("Memory: store failed: %s", exc)
             return False
+
+    def query(self, text: str, n_results: int = 5) -> list[str]:
+        """Return the texts of the entries most similar to ``text``."""
+        return [
+            entry["text"]
+            for entry in self.search(text, n_results=n_results)
+            if entry.get("text")
+        ]
 
     def build_context_block(self, query: str, max_results: int = 3) -> str:
         """Build a context block from relevant past conversations."""

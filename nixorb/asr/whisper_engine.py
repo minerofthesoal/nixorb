@@ -8,11 +8,9 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
-import sounddevice as sd
-import soundfile as sf
 
 from nixorb.core.event_bus import Event, bus
 
@@ -37,7 +35,7 @@ class WhisperEngine:
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        self._model = None
+        self._model: Any = None
         self._model_name = settings.asr_model
         self._language = settings.asr_language or "en"
         self._mic_index = settings.microphone_index
@@ -48,27 +46,44 @@ class WhisperEngine:
     def is_loaded(self) -> bool:
         return self._model is not None
 
-    def _load_model(self):
+    def _load_model(self) -> Any:
         """Load the faster-whisper model (runs in executor)."""
         try:
             from faster_whisper import WhisperModel
+        except ImportError as exc:
+            raise RuntimeError(
+                "faster-whisper is not installed — speech recognition is "
+                "unavailable. Install it with: pip install faster-whisper"
+            ) from exc
 
-            # Use INT8 for GTX 1080 — ~2.1 GB VRAM
-            compute_type = "int8_float16"
-            device = "cuda"
+        # INT8 on the GPU (~2.1 GB VRAM on a GTX 1080), then plain int8 on the
+        # CPU. Trying only CUDA meant a CPU-only box — or a CUDA box missing
+        # cuDNN — got no ASR at all, with an opaque ctranslate2 error.
+        attempts = [("cuda", "int8_float16"), ("cpu", "int8")]
+        last_exc: Exception | None = None
 
-            log.info("ASR: loading Whisper %s (%s, %s)", self._model_name, device, compute_type)
-            model = WhisperModel(
-                self._model_name,
-                device=device,
-                compute_type=compute_type,
-                cpu_threads=4,
-            )
-            log.info("ASR: Whisper model loaded successfully")
-            return model
-        except Exception as exc:
-            log.error("ASR: failed to load Whisper model: %s", exc)
-            raise
+        for device, compute_type in attempts:
+            try:
+                log.info(
+                    "ASR: loading Whisper %s (%s, %s)",
+                    self._model_name, device, compute_type,
+                )
+                model = WhisperModel(
+                    self._model_name,
+                    device=device,
+                    compute_type=compute_type,
+                    cpu_threads=4,
+                )
+                log.info("ASR: Whisper loaded on %s", device)
+                return model
+            except Exception as exc:
+                last_exc = exc
+                log.warning("ASR: could not load on %s: %s", device, exc)
+
+        log.error("ASR: failed to load Whisper model on any device")
+        raise RuntimeError(
+            f"Could not load Whisper model '{self._model_name}': {last_exc}"
+        ) from last_exc
 
     def _unload_model(self, model) -> None:
         """Unload the model and free VRAM."""
@@ -115,6 +130,8 @@ class WhisperEngine:
         has_speech = False
 
         try:
+            import sounddevice as sd
+
             with sd.InputStream(
                 samplerate=SAMPLE_RATE,
                 channels=CHANNELS,
@@ -169,6 +186,8 @@ class WhisperEngine:
             raise RuntimeError("Whisper model not loaded")
 
         try:
+            import soundfile as sf
+
             # Convert float32 to int16 WAV in memory
             wav_buffer = io.BytesIO()
             sf.write(wav_buffer, audio, SAMPLE_RATE, format="WAV", subtype="PCM_16")

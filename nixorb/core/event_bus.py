@@ -6,8 +6,10 @@ This eliminates direct coupling between UI, ASR, LLM, TTS, and other components.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import itertools
 import logging
+import time
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -18,6 +20,10 @@ log = logging.getLogger(__name__)
 
 # Global tiebreaker counter — prevents PriorityQueue comparison errors
 counter = itertools.count()
+
+# A handler holding the dispatch loop longer than this is a bug worth
+# reporting: everything else on the bus is stuck behind it.
+SLOW_HANDLER_SECONDS = 5.0
 
 
 class Event(Enum):
@@ -100,6 +106,7 @@ class EventBus:
     """Singleton async event bus with priority queue dispatch."""
 
     _instance: EventBus | None = None
+    _initialized: bool = False
 
     def __new__(cls) -> EventBus:
         if cls._instance is None:
@@ -118,26 +125,39 @@ class EventBus:
         )
         self._loop: asyncio.AbstractEventLoop | None = None
         self._running = False
+        self._task: asyncio.Task | None = None
         self._initialized = True
 
     def reset(self) -> None:
         """Reset all state — useful for tests."""
+        self._ensure_init()
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
         self._handlers = defaultdict(list)
         self._wildcard = []
         self._queue = asyncio.PriorityQueue()
         self._loop = None
         self._running = False
+        self._task = None
+
+    # conftest.py and the rest of the suite call it by this name.
+    reset_for_tests = reset
 
     async def start(self) -> None:
-        """Start the event dispatch loop."""
+        """Start the event dispatch loop (idempotent)."""
         self._ensure_init()
+        if self._running and self._task is not None and not self._task.done():
+            log.debug("EventBus already running")
+            return
         self._loop = asyncio.get_running_loop()
         self._running = True
-        asyncio.create_task(self._dispatch_loop(), name="event-bus")
+        # Hold the reference: a bare create_task() can be garbage-collected
+        # while it is suspended, which silently kills the whole bus.
+        self._task = asyncio.create_task(self._dispatch_loop(), name="event-bus")
         log.info("EventBus started")
 
     async def _dispatch_loop(self) -> None:
-        """Main dispatch loop — runs forever until stopped."""
+        """Main dispatch loop — runs until stopped."""
         while self._running:
             try:
                 _pri, _seq, payload = await asyncio.wait_for(
@@ -148,26 +168,52 @@ class EventBus:
             except asyncio.CancelledError:
                 break
 
-            handlers = list(self._handlers.get(payload.event, [])) + list(
-                self._wildcard
-            )
-            handlers.sort(key=lambda t: t[0])
+            try:
+                handlers = list(self._handlers.get(payload.event, [])) + list(
+                    self._wildcard
+                )
+                handlers.sort(key=lambda t: t[0])
 
-            for _priority, handler in handlers:
-                try:
-                    await handler(payload)
-                except Exception:
-                    log.exception("Handler %s raised for %s", handler, payload.event)
-
-            self._queue.task_done()
+                for _priority, handler in handlers:
+                    started = time.monotonic()
+                    try:
+                        await handler(payload)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        log.exception(
+                            "Handler %s raised for %s", handler, payload.event
+                        )
+                    elapsed = time.monotonic() - started
+                    if elapsed > SLOW_HANDLER_SECONDS:
+                        # Handlers run inline, so a slow one stalls every other
+                        # event behind it. Say so instead of looking hung.
+                        log.warning(
+                            "EventBus: handler %s blocked dispatch for %.1fs "
+                            "on %s — it should spawn a task instead",
+                            getattr(handler, "__qualname__", handler),
+                            elapsed,
+                            payload.event.name,
+                        )
+            finally:
+                # Must always run, or stop()'s queue.join() never returns.
+                self._queue.task_done()
 
     async def stop(self) -> None:
         """Stop the event bus gracefully."""
-        self._running = False
+        self._ensure_init()
+        if not self._running and self._task is None:
+            return
         try:
             await asyncio.wait_for(self._queue.join(), timeout=3.0)
         except TimeoutError:
             log.warning("EventBus drain timed out")
+        self._running = False
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._task
+        self._task = None
         log.info("EventBus stopped")
 
     async def emit(

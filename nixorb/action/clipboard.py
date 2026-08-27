@@ -56,7 +56,9 @@ async def write_clipboard(text: str) -> bool:
                 "wl-copy",
                 stdin=asyncio.subprocess.PIPE,
             )
-            await proc.communicate(text.encode("utf-8"))
+            await asyncio.wait_for(
+                proc.communicate(text.encode("utf-8")), timeout=5.0
+            )
             return proc.returncode == 0
 
         elif _HAS_XCLIP:
@@ -64,7 +66,9 @@ async def write_clipboard(text: str) -> bool:
                 "xclip", "-selection", "clipboard",
                 stdin=asyncio.subprocess.PIPE,
             )
-            await proc.communicate(text.encode("utf-8"))
+            await asyncio.wait_for(
+                proc.communicate(text.encode("utf-8")), timeout=5.0
+            )
             return proc.returncode == 0
 
         else:

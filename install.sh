@@ -73,12 +73,31 @@ else
     echo -e "${GREEN}✓ Ollama already installed${NC}"
 fi
 
-# Start Ollama service
-if ! systemctl --user is-active --quiet ollama; then
-    echo "Starting Ollama service…"
-    systemctl --user enable ollama
-    systemctl --user start ollama
-    sleep 2
+# Start the Ollama service. The official installer creates a *system* unit,
+# so `systemctl --user` fails on most setups; try the system unit first and
+# fall back to a background `ollama serve`.
+if ! curl -sf --max-time 2 http://localhost:11434/api/tags >/dev/null 2>&1; then
+    echo "Starting Ollama…"
+    if systemctl list-unit-files ollama.service >/dev/null 2>&1; then
+        sudo systemctl enable --now ollama || true
+    elif systemctl --user list-unit-files ollama.service >/dev/null 2>&1; then
+        systemctl --user enable --now ollama || true
+    else
+        echo -e "${YELLOW}⚠ No ollama service unit found.${NC}"
+        echo "   Start it manually in another terminal:  ollama serve"
+    fi
+
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        curl -sf --max-time 2 http://localhost:11434/api/tags >/dev/null 2>&1 && break
+        sleep 1
+    done
+fi
+
+if curl -sf --max-time 2 http://localhost:11434/api/tags >/dev/null 2>&1; then
+    echo -e "${GREEN}✓ Ollama is responding on localhost:11434${NC}"
+else
+    echo -e "${YELLOW}⚠ Ollama is not responding — NixOrb will start but cannot think.${NC}"
+    echo "   Run 'ollama serve' and then 'nixorb status' to re-check."
 fi
 
 # ── Python Environment ─────────────────────────────────────────── #
@@ -108,10 +127,29 @@ fi
 echo -e "${BLUE}→ Installing NixOrb…${NC}"
 pip install -e "."
 
+# ── Put `nixorb` on PATH ───────────────────────────────────────── #
+# Everything above installs into a venv that is not on PATH, so without
+# this `nixorb start` is "command not found" the moment the shell that ran
+# this script exits.
+echo -e "${BLUE}→ Linking nixorb into ~/.local/bin…${NC}"
+mkdir -p "${HOME}/.local/bin"
+ln -sf "$VENV_DIR/bin/nixorb" "${HOME}/.local/bin/nixorb"
+
+case ":$PATH:" in
+    *":${HOME}/.local/bin:"*) ;;
+    *)
+        echo -e "${YELLOW}⚠ ~/.local/bin is not on your PATH.${NC}"
+        echo "   Add this to ~/.bashrc or ~/.config/fish/config.fish:"
+        echo "     export PATH=\"\$HOME/.local/bin:\$PATH\""
+        ;;
+esac
+
 # ── Pull default model ─────────────────────────────────────────── #
 echo ""
 echo -e "${BLUE}→ Pulling default LLM model (llama3.2)…${NC}"
-ollama pull llama3.2
+if ! ollama pull llama3.2; then
+    echo -e "${YELLOW}⚠ Could not pull llama3.2 — run 'ollama pull llama3.2' later.${NC}"
+fi
 
 # ── Piper voice model ──────────────────────────────────────────── #
 echo ""

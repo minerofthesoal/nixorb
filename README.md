@@ -68,9 +68,16 @@ Edit `~/.config/nixorb/config.toml` or use the GUI (right-click orb → Settings
 hotkey = "Ctrl+Alt+Space"
 llm_model = "llama3.2"
 ollama_host = "http://localhost:11434"
-wake_word_enabled = true
 tts_backend = "piper"
+
+# Requires the optional extra: pip install 'nixorb[wakeword]'
+wake_word_enabled = false
+
+# Ask before running every command the model emits.
+require_action_confirmation = true
 ```
+
+See `config/default.toml` for every option with comments.
 
 ## Keyboard Shortcuts
 
@@ -78,7 +85,8 @@ tts_backend = "piper"
 |--------|---------|-------|
 | Activate | `Ctrl+Alt+Space` | Global hotkey (via pynput/XWayland) |
 | KDE Shortcut | Custom | Set in System Settings → Shortcuts |
-| Orb click | Double-click | Direct activation |
+| Orb double-click | Double-click | Direct activation |
+| Orb right-click | Right-click | Menu: Activate / Settings / Quit |
 | Opacity | Scroll wheel | While hovering over orb |
 | Drag | Click+drag | Reposition the orb |
 
@@ -105,6 +113,21 @@ nixorb/
 
 - **System**: `python 3.12+`, `qt6-base`, `qt6-declarative`, `qt6-wayland`, `portaudio`, `wl-clipboard`, `grim`, `piper-tts`, `ollama`
 - **Python**: See `requirements.txt` / `pyproject.toml`
+
+## Troubleshooting
+
+NixOrb writes everything it does to `~/.local/share/nixorb/logs/nixorb.log`.
+Start with `nixorb status` — it reports whether Ollama is actually reachable
+and whether the configured model is installed.
+
+| Symptom | Check |
+|---|---|
+| Orb never appears | `qt6-declarative` and `qt6-wayland` installed? The log prints any QML error. |
+| `nixorb: command not found` | `~/.local/bin` on your `PATH` (the installer links it there). |
+| Orb appears, nothing happens on activate | `nixorb status` — Ollama unreachable, or the model isn't pulled. |
+| It speaks no audio | Install `piper-tts-bin` or `espeak-ng`; the log says which is missing. |
+| Commands are always denied | Approve the confirmation dialog, or set `require_action_confirmation = false`. |
+| Actions do nothing when run as root | NixOrb disables command execution as root — run it as your normal user. |
 
 ## Testing
 

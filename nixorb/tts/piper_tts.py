@@ -15,7 +15,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-import sounddevice as sd
+
+from nixorb.core.event_bus import Event, bus
 
 if TYPE_CHECKING:
     from nixorb.settings import Settings
@@ -57,6 +58,11 @@ class PiperTTS:
                 return loc
         return None
 
+    @property
+    def available(self) -> bool:
+        """True if any TTS engine is installed."""
+        return self._piper_available or self._espeak_available
+
     async def speak(self, text: str) -> None:
         """Speak the given text aloud."""
         if not text or not text.strip():
@@ -64,13 +70,30 @@ class PiperTTS:
 
         text = text.strip()
         log.info("TTS: speaking '%s…'", text[:60])
+        await bus.emit(Event.TTS_START, data={"text": text[:200]},
+                       source="PiperTTS")
 
         if self._piper_available:
             await self._speak_piper(text)
         elif self._espeak_available:
+            log.info("TTS: piper not installed — using espeak-ng")
             await self._speak_espeak(text)
         else:
-            log.error("TTS: no TTS engine available (install piper or espeak-ng)")
+            msg = (
+                "No TTS engine installed — NixOrb will stay silent. "
+                "Install piper-tts-bin or espeak-ng."
+            )
+            log.error("TTS: %s", msg)
+            await bus.emit(Event.TTS_ERROR, data={"error": msg},
+                           source="PiperTTS")
+            await bus.emit(
+                Event.LOG,
+                data={"level": "warning", "msg": f"🔇 {msg}"},
+                source="PiperTTS",
+            )
+            return
+
+        await bus.emit(Event.TTS_DONE, source="PiperTTS")
 
     def _speak_piper_sync(self, text: str) -> None:
         """Synchronous Piper TTS (runs in executor)."""
@@ -157,6 +180,8 @@ class PiperTTS:
     def _play_pcm(self, data: bytes, sample_rate: int, channels: int) -> None:
         """Play raw PCM audio data."""
         try:
+            import sounddevice as sd
+
             # Convert bytes to numpy array
             audio = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
 

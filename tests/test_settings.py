@@ -5,37 +5,49 @@ from nixorb.settings import _CONFIG_ENV, Settings
 
 
 def test_defaults():
+    """v2 is local-only: Ollama for the LLM, Piper for speech."""
     s = Settings()
-    assert s.llm_backend == "huggingface"
-    # "glados" is the default because it has an automatic SpeechT5 fallback
-    # baked in, so TTS actually produces audio out of the box. The old
-    # default ("huggingface" backend + tts_hf_repo pointed at a text-only
-    # StableLM checkpoint) silently produced no audio at all — see
-    # nixorb/tts/hf_tts.py and nixorb/tts/glados_tts.py.
-    assert s.tts_backend == "glados"
-    assert s.tts_hf_repo == "microsoft/speecht5_tts"
+    assert s.llm_backend == "ollama"
+    assert s.llm_model == "llama3.2"
+    assert s.ollama_host == "http://localhost:11434"
+    assert s.tts_backend == "piper"
+    assert s.tts_voice == "en_US-lessac-medium"
     assert s.hotkey == "Ctrl+Alt+Space"
     assert s.require_action_confirmation is True
+
+
+def test_wake_word_defaults_off():
+    """openwakeword is the optional 'wakeword' extra, so it cannot default on."""
+    assert Settings().wake_word_enabled is False
+
+
+def test_sandbox_defaults_off():
+    """The bwrap sandbox is read-only with no network; opt-in, not default."""
+    assert Settings().sandbox_actions is False
+
+
+def test_web_search_max_results_exists():
+    """main.py reads this on every web-search turn."""
+    assert Settings().web_search_max_results >= 1
 
 
 def test_save_and_reload(tmp_path, monkeypatch):
     cfg = tmp_path / "config.toml"
     monkeypatch.setenv(_CONFIG_ENV, str(cfg))
 
-    s = Settings(llm_model="gpt-4o", openai_api_key="sk-test123")
+    s = Settings(llm_model="mistral", orb_size=200)
     s.save()
 
     assert cfg.exists()
     s2 = Settings.load()
-    assert s2.llm_model == "gpt-4o"
-    assert s2.openai_api_key == "sk-test123"
+    assert s2.llm_model == "mistral"
+    assert s2.orb_size == 200
 
 
 def test_load_missing_config_returns_defaults(tmp_path, monkeypatch):
     cfg = tmp_path / "nonexistent.toml"
     monkeypatch.setenv(_CONFIG_ENV, str(cfg))
-    s = Settings.load()
-    assert s.llm_backend == "huggingface"
+    assert Settings.load().llm_backend == "ollama"
 
 
 def test_none_values_not_in_toml(tmp_path, monkeypatch):
@@ -53,8 +65,37 @@ def test_config_env_override(tmp_path, monkeypatch):
     """NIXORB_CONFIG env var overrides the default config path."""
     cfg = tmp_path / "custom.toml"
     monkeypatch.setenv(_CONFIG_ENV, str(cfg))
-    s = Settings(llm_model="custom-model")
-    s.save()
+    Settings(llm_model="custom-model").save()
     assert cfg.exists()
-    s2 = Settings.load()
-    assert s2.llm_model == "custom-model"
+    assert Settings.load().llm_model == "custom-model"
+
+
+def test_unknown_keys_are_ignored(tmp_path, monkeypatch):
+    """A config left over from an older version must not break startup."""
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('llm_model = "keepme"\nlegacy_removed_option = "gone"\n')
+    monkeypatch.setenv(_CONFIG_ENV, str(cfg))
+    assert Settings.load().llm_model == "keepme"
+
+
+def test_bad_value_falls_back_to_defaults(tmp_path, monkeypatch):
+    """A corrupt config must not stop NixOrb from starting."""
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('orb_size = "not a number"\n')
+    monkeypatch.setenv(_CONFIG_ENV, str(cfg))
+    assert Settings.load().orb_size == 120
+
+
+def test_malformed_toml_falls_back_to_defaults(tmp_path, monkeypatch):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("this is not [ valid toml =\n")
+    monkeypatch.setenv(_CONFIG_ENV, str(cfg))
+    assert Settings.load().llm_model == "llama3.2"
+
+
+def test_round_trip_preserves_every_field(tmp_path, monkeypatch):
+    cfg = tmp_path / "config.toml"
+    monkeypatch.setenv(_CONFIG_ENV, str(cfg))
+    original = Settings(orb_x=10, orb_y=20)
+    original.save()
+    assert Settings.load().model_dump() == original.model_dump()

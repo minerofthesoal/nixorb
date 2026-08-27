@@ -1,82 +1,113 @@
-"""tests/test_asr.py — WhisperEngine unit tests (no GPU required)."""
+"""tests/test_asr.py — WhisperEngine unit tests (no GPU or mic required)."""
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
 
-pytestmark = pytest.mark.asyncio
-
 
 @pytest.fixture
 def settings():
     s = MagicMock()
-    s.asr_model        = "large-v3"
-    s.asr_language     = ""
+    s.asr_model = "large-v3"
+    s.asr_language = ""
     s.microphone_index = None
     return s
 
 
 @pytest.fixture
-async def engine(settings, started_bus):
+def engine(settings, started_bus):
     from nixorb.asr.whisper_engine import WhisperEngine
     return WhisperEngine(settings)
 
 
-async def test_transcribe_returns_none_on_empty_audio(engine):
-    """Empty audio should return None, not crash."""
-    audio = np.zeros(100, dtype=np.float32)
-
-    async def _fake_lease(_name):
-        class _Ctx:
-            async def __aenter__(self): return None
-            async def __aexit__(self, *a): pass
-        return _Ctx()
-
-    with patch("nixorb.core.vram_manager.vram.lease", _fake_lease):
-        result = await engine._transcribe_async(audio)
-    assert result is None
+def test_language_defaults_to_english(engine):
+    assert engine._language == "en"
 
 
-async def test_vad_silence_detection():
-    """VAD should detect silence below threshold."""
-    import numpy as np
+def test_vad_silence_detection():
+    """Silence must sit below the VAD threshold."""
+    from nixorb.asr.whisper_engine import SILENCE_THRESHOLD
 
-    from nixorb.asr.whisper_engine import SILENCE_DB
-
-    # Silence: RMS should be below threshold
     silent = np.zeros(1024, dtype=np.float32)
-    rms_db = 20.0 * np.log10(np.sqrt(np.mean(silent ** 2)) + 1e-10)
-    assert rms_db < SILENCE_DB
+    assert np.sqrt(np.mean(silent**2)) < SILENCE_THRESHOLD
 
 
-async def test_vad_speech_detection():
-    """Loud signal should be detected as speech."""
-    import numpy as np
-
-    from nixorb.asr.whisper_engine import SILENCE_DB
+def test_vad_speech_detection():
+    """A loud signal must sit above the VAD threshold."""
+    from nixorb.asr.whisper_engine import SILENCE_THRESHOLD
 
     speech = np.random.uniform(-0.8, 0.8, 1024).astype(np.float32)
-    rms_db = 20.0 * np.log10(np.sqrt(np.mean(speech ** 2)) + 1e-10)
-    assert rms_db > SILENCE_DB
+    assert np.sqrt(np.mean(speech**2)) > SILENCE_THRESHOLD
+
+
+async def test_transcribe_raises_without_a_model(engine):
+    with pytest.raises(RuntimeError, match="not loaded"):
+        engine._transcribe_sync(np.zeros(100, dtype=np.float32))
 
 
 async def test_record_and_transcribe_emits_events(engine, started_bus):
-    """record_and_transcribe should emit RECORDING_START and RECORDING_STOP."""
+    """record_and_transcribe emits RECORDING_START even when nothing is heard."""
     from nixorb.core.event_bus import Event
+
     received = []
 
     async def _handler(p):
         received.append(p.event)
 
     started_bus.subscribe(Event.RECORDING_START, _handler)
-    started_bus.subscribe(Event.RECORDING_STOP,  _handler)
+    started_bus.subscribe(Event.RECORDING_STOP, _handler)
 
-    with patch.object(engine, "_record_blocking", return_value=None):
-        await engine.record_and_transcribe()
+    engine._model = object()  # skip preload
+    with patch.object(engine, "_record_audio_sync", return_value=None):
+        result = await engine.record_and_transcribe()
 
-    import asyncio
     await asyncio.sleep(0.1)
+    assert result is None
     assert Event.RECORDING_START in received
-    assert Event.RECORDING_STOP  in received
+
+
+async def test_short_audio_is_discarded(engine, started_bus):
+    """Sub-300ms captures are noise, not speech."""
+    engine._model = object()
+    tiny = np.zeros(100, dtype=np.float32)
+    with patch.object(engine, "_record_audio_sync", return_value=tiny):
+        assert await engine.record_and_transcribe() is None
+
+
+async def test_missing_faster_whisper_is_a_clear_error(engine):
+    """A missing optional backend must say so, not raise ImportError deep down."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _no_faster_whisper(name, *args, **kwargs):
+        if name == "faster_whisper":
+            raise ImportError("No module named 'faster_whisper'")
+        return real_import(name, *args, **kwargs)
+
+    with patch.object(builtins, "__import__", _no_faster_whisper):
+        with pytest.raises(RuntimeError, match="faster-whisper is not installed"):
+            engine._load_model()
+
+
+async def test_load_model_falls_back_to_cpu(engine):
+    """A CUDA failure must fall back to CPU rather than killing ASR."""
+    attempts = []
+
+    class _FakeModel:
+        def __init__(self, name, device=None, compute_type=None, **kw):
+            attempts.append(device)
+            if device == "cuda":
+                raise RuntimeError("no CUDA driver")
+
+    fake_module = MagicMock()
+    fake_module.WhisperModel = _FakeModel
+
+    with patch.dict("sys.modules", {"faster_whisper": fake_module}):
+        model = engine._load_model()
+
+    assert attempts == ["cuda", "cpu"]
+    assert isinstance(model, _FakeModel)

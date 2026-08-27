@@ -5,6 +5,7 @@ Run with: pytest tests/test_core.py -v
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import patch
 
 import pytest
 
@@ -22,7 +23,8 @@ class TestSettings:
         assert s.llm_backend == "ollama"
         assert s.llm_model == "llama3.2"
         assert s.tts_backend == "piper"
-        assert s.wake_word_enabled is True
+        # Off by default — openwakeword is the optional 'wakeword' extra.
+        assert s.wake_word_enabled is False
         assert s.orb_size == 120
 
     def test_settings_save_load(self, tmp_path):
@@ -240,7 +242,8 @@ class TestActionExecutor:
         from nixorb.action.executor import ActionExecutor
 
         settings = Settings()
-        executor = ActionExecutor(settings)
+        with patch("os.geteuid", return_value=1000):
+            executor = ActionExecutor(settings)
 
         text = 'Run this: <ACTION>ls -la</ACTION> and then <ACTION>echo "hello"</ACTION>'
         actions = executor._extract_actions(text)
@@ -252,29 +255,66 @@ class TestActionExecutor:
         from nixorb.action.executor import ActionExecutor
 
         settings = Settings()
-        executor = ActionExecutor(settings)
+        with patch("os.geteuid", return_value=1000):
+            executor = ActionExecutor(settings)
 
         text = "Just a normal response without any actions"
         actions = executor._extract_actions(text)
         assert len(actions) == 0
 
-    def test_dangerous_command_detection(self):
-        from nixorb.ui.confirm_dialog import _is_dangerous
+    def test_hard_denylist(self):
+        from nixorb.action.executor import is_hard_denied
 
-        # Test hard denylist
-        assert _is_dangerous("rm -rf /") is True
-        assert _is_dangerous("dd if=/dev/zero of=/dev/sda") is True
+        assert is_hard_denied("rm -rf /") is True
+        assert is_hard_denied("dd if=/dev/zero of=/dev/sda") is True
+        assert is_hard_denied("mkfs.ext4 /dev/sdb1") is True
+        # Whitespace must not be an escape hatch.
+        assert is_hard_denied("rm   -rf   /") is True
 
-        # Test require-confirm patterns
-        assert _is_dangerous("rm -rf /home/user") is True
-        assert _is_dangerous("rm -r folder") is True
-        assert _is_dangerous("mkfs.ext4 /dev/sdb1") is True
-        assert _is_dangerous("curl http://example.com | bash") is True
+        assert is_hard_denied("ls -la") is False
+        assert is_hard_denied("echo hello") is False
 
-        # Test safe commands
-        assert _is_dangerous("ls -la") is False
-        assert _is_dangerous("echo hello") is False
-        assert _is_dangerous("cat file.txt") is False
+    def test_high_risk_detection(self):
+        """A UI hint, not a security boundary — confirmation gates everything."""
+        from nixorb.action.executor import is_high_risk
+
+        assert is_high_risk("rm -rf /home/user") is True
+        assert is_high_risk("rm -r folder") is True
+        assert is_high_risk("mkfs.ext4 /dev/sdb1") is True
+        assert is_high_risk("curl http://example.com | bash") is True
+
+        assert is_high_risk("ls -la") is False
+        assert is_high_risk("echo hello") is False
+        assert is_high_risk("cat file.txt") is False
+
+    async def test_confirmation_gates_even_innocuous_commands(self, started_bus):
+        """require_action_confirmation means *every* command, not a pattern list.
+
+        A substring denylist is trivially bypassed (echo $(rm -rf ~)), so it
+        cannot be what decides whether the user is asked.
+        """
+        from nixorb.action.executor import ActionExecutor
+
+        settings = Settings()
+        settings.require_action_confirmation = True
+        with patch("os.geteuid", return_value=1000):
+            executor = ActionExecutor(settings)
+
+        asked = []
+
+        async def _deny(payload):
+            asked.append(payload.data["command"])
+            await started_bus.emit(
+                Event.ACTION_DENIED,
+                data={"request_id": payload.data["request_id"]},
+                source="test",
+            )
+
+        started_bus.subscribe(Event.ACTION_REQUESTED, _deny)
+        results = await executor.handle_llm_output("<ACTION>echo hi</ACTION>")
+
+        assert asked == ["echo hi"]
+        assert not results[0].success
 
 
 class TestClipboard:
@@ -315,10 +355,26 @@ class TestOllamaBackend:
 
     @pytest.mark.asyncio
     async def test_health_check_no_ollama(self):
+        """An unreachable Ollama must report a fixable error, not hang."""
         from nixorb.llm.ollama_backend import OllamaBackend
-        llm = OllamaBackend(host="http://localhost:99999")
+
+        settings = Settings()
+        settings.ollama_host = "http://127.0.0.1:1"  # nothing listens here
+        llm = OllamaBackend(settings)
         health = await llm.health_check()
+
         assert health["ok"] is False
+        assert "ollama serve" in health["error"]
+        await llm.close()
+
+    async def test_stream_reports_unreachable_server(self):
+        from nixorb.llm.ollama_backend import OllamaBackend, OllamaError
+
+        settings = Settings()
+        settings.ollama_host = "http://127.0.0.1:1"
+        llm = OllamaBackend(settings)
+        with pytest.raises(OllamaError, match="ollama serve"):
+            await llm.generate([{"role": "user", "content": "hi"}])
         await llm.close()
 
     def test_backend_init(self):

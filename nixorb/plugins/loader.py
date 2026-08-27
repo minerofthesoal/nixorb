@@ -6,7 +6,11 @@ tools via function calling.
 """
 from __future__ import annotations
 
+import asyncio
+import functools
+import importlib
 import importlib.util
+import inspect
 import logging
 import sys
 from collections.abc import Callable
@@ -18,8 +22,12 @@ from nixorb.core.event_bus import Event, bus
 
 log = logging.getLogger(__name__)
 
-# Required attributes for a valid plugin
-REQUIRED_ATTRS = ["TOOL_DEFINITION"]
+# A plugin needs TOOL_DEFINITION to be *advertised* to the LLM, but any
+# public callable it defines can still be dispatched by name.
+TOOL_DEFINITION_ATTR = "TOOL_DEFINITION"
+
+# How long a single plugin call may run before we give up on it.
+TOOL_TIMEOUT_SECONDS = 30.0
 
 
 class PluginLoader:
@@ -34,6 +42,8 @@ class PluginLoader:
     def load_all(self) -> int:
         """Load all plugins from the plugin directory."""
         count = 0
+        # Pick up plugin files created since this process started.
+        importlib.invalidate_caches()
         if not self._plugin_dir.exists():
             log.warning("Plugin dir not found: %s", self._plugin_dir)
             return 0
@@ -64,29 +74,49 @@ class PluginLoader:
 
         module = importlib.util.module_from_spec(spec)
         sys.modules[f"nixorb.plugins.loaded.{name}"] = module
-        spec.loader.exec_module(module)
 
-        # Validate required attributes
-        for attr in REQUIRED_ATTRS:
-            if not hasattr(module, attr):
-                raise AttributeError(f"Plugin {name} missing required attribute: {attr}")
+        # Execute the source directly instead of spec.loader.exec_module().
+        # Python validates its __pycache__ on (mtime, size), so editing a
+        # plugin without changing its length and reloading in the same second
+        # silently re-runs the *old* bytecode — exactly the case "Reload
+        # Plugins" exists for.
+        source = file_path.read_text(encoding="utf-8")
+        exec(compile(source, str(file_path), "exec"), module.__dict__)
 
-        # Register tool functions
-        tool_def = module.TOOL_DEFINITION
-        func_name = tool_def.get("function", {}).get("name", name)
+        registered: list[str] = []
 
-        if hasattr(module, func_name):
-            self._tools[func_name] = getattr(module, func_name)
-        else:
-            # Try to find any callable that matches
-            for attr_name in dir(module):
-                obj = getattr(module, attr_name)
-                if callable(obj) and not attr_name.startswith("_"):
-                    self._tools[func_name] = obj
-                    break
+        # Every public callable *defined in this file* is dispatchable. The
+        # `__module__` check keeps imported helpers (json.dumps, shutil.which)
+        # out of the tool table.
+        for attr_name in dir(module):
+            if attr_name.startswith("_"):
+                continue
+            obj = getattr(module, attr_name)
+            if callable(obj) and getattr(obj, "__module__", None) == module.__name__:
+                self._tools[attr_name] = obj
+                registered.append(attr_name)
+
+        # TOOL_DEFINITION's declared name wins, so a plugin can expose its
+        # entry point under a different name than the Python function.
+        tool_def = getattr(module, TOOL_DEFINITION_ATTR, None)
+        if isinstance(tool_def, dict):
+            func_name = tool_def.get("function", {}).get("name", name)
+            impl = getattr(module, func_name, None)
+            if impl is None:
+                # Fall back to the first public callable the module defines.
+                impl = next(
+                    (getattr(module, n) for n in registered), None
+                )
+            if impl is None:
+                raise AttributeError(
+                    f"Plugin {name} declares tool '{func_name}' but defines "
+                    f"no callable to implement it"
+                )
+            self._tools[func_name] = impl
+            registered.append(func_name)
 
         self._plugins[name] = module
-        log.debug("Plugin: loaded '%s' with tool '%s'", name, func_name)
+        log.debug("Plugin: loaded '%s' exposing %s", name, registered or "nothing")
 
     def reload(self, name: str) -> bool:
         """Reload a specific plugin."""
@@ -112,7 +142,9 @@ class PluginLoader:
             return False
 
     def reload_all(self) -> int:
-        """Reload all plugins."""
+        """Reload all plugins from disk."""
+        for name in list(self._plugins):
+            sys.modules.pop(f"nixorb.plugins.loaded.{name}", None)
         self._plugins.clear()
         self._tools.clear()
         return self.load_all()
@@ -125,8 +157,9 @@ class PluginLoader:
         """Get all tool definitions for LLM function calling."""
         tools = []
         for _name, module in self._plugins.items():
-            if hasattr(module, "TOOL_DEFINITION"):
-                tools.append(module.TOOL_DEFINITION)
+            tool_def = getattr(module, TOOL_DEFINITION_ATTR, None)
+            if isinstance(tool_def, dict):
+                tools.append(tool_def)
         return tools
 
     def get_tool_function(self, name: str) -> Callable | None:
@@ -139,3 +172,43 @@ class PluginLoader:
         if func is None:
             raise KeyError(f"Tool '{name}' not found")
         return func(**kwargs)
+
+    async def dispatch(self, name: str, args: dict[str, Any] | None = None) -> str:
+        """Call a plugin tool by name and return its result as a string.
+
+        Handles sync and async plugins alike, and never raises: the return
+        value goes straight back to the LLM, so an error message is more
+        useful than an exception that kills the turn.
+        """
+        func = self._tools.get(name)
+        if func is None:
+            available = ", ".join(sorted(self._tools)) or "none"
+            log.warning("Plugin: tool '%s' not found (have: %s)", name, available)
+            return f"Tool '{name}' not found. Available tools: {available}"
+
+        kwargs = dict(args or {})
+        try:
+            if inspect.iscoroutinefunction(func):
+                result = await asyncio.wait_for(
+                    func(**kwargs), timeout=TOOL_TIMEOUT_SECONDS
+                )
+            else:
+                # Plugins are third-party code and may block on I/O; keep them
+                # off the event loop.
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(functools.partial(func, **kwargs)),
+                    timeout=TOOL_TIMEOUT_SECONDS,
+                )
+                if inspect.isawaitable(result):
+                    result = await result
+        except TimeoutError:
+            log.error("Plugin: tool '%s' timed out", name)
+            return f"Tool '{name}' timed out after {TOOL_TIMEOUT_SECONDS:g}s"
+        except TypeError as exc:
+            log.error("Plugin: bad arguments for '%s': %s", name, exc)
+            return f"Tool '{name}' rejected those arguments: {exc}"
+        except Exception as exc:
+            log.exception("Plugin: tool '%s' raised", name)
+            return f"Tool '{name}' failed: {exc}"
+
+        return "" if result is None else str(result)

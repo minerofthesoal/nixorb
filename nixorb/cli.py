@@ -41,10 +41,10 @@ def start(
     if headless:
         typer.echo("Headless mode not yet implemented — use GUI mode")
         raise typer.Exit(1)
-    else:
-        from nixorb.main import main
 
-        main()
+    from nixorb.main import main
+
+    raise typer.Exit(main() or 0)
 
 
 @app.command()
@@ -67,12 +67,26 @@ def ask(
         from nixorb.llm.ollama_backend import OllamaBackend
 
         llm = OllamaBackend(settings)
-        messages = [{"role": "user", "content": query}]
+        messages = [
+            {"role": "system", "content": settings.llm_system_prompt},
+            {"role": "user", "content": query},
+        ]
 
-        typer.echo(f"🤔 Querying {settings.llm_model}…")
         try:
+            health = await llm.health_check()
+            if not health["ok"]:
+                typer.echo(f"❌ {health['error']}", err=True)
+                if health.get("models") is not None:
+                    typer.echo(
+                        f"   Try: ollama pull {settings.llm_model}", err=True
+                    )
+                raise typer.Exit(1)
+
+            typer.echo(f"🤔 Querying {settings.llm_model}…")
             response = await llm.generate(messages)
             typer.echo(f"\n🤖 {response}")
+        except typer.Exit:
+            raise
         except Exception as exc:
             typer.echo(f"❌ Error: {exc}", err=True)
             raise typer.Exit(1) from exc
@@ -113,6 +127,21 @@ def status() -> None:
     typer.echo(f"  Backend: {settings.llm_backend}")
     typer.echo(f"  Model: {settings.llm_model}")
     typer.echo(f"  Host: {settings.ollama_host}")
+
+    async def _probe() -> dict:
+        from nixorb.llm.ollama_backend import OllamaBackend
+
+        llm = OllamaBackend(settings)
+        try:
+            return await llm.health_check()
+        finally:
+            await llm.close()
+
+    health = asyncio.run(_probe())
+    if health["ok"]:
+        typer.echo(f"  ✅ Reachable, model '{settings.llm_model}' installed")
+    else:
+        typer.echo(f"  ❌ {health['error']}")
 
     # Check dependencies
     typer.echo("\n📦 Dependencies:")
