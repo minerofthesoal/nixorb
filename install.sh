@@ -45,21 +45,33 @@ sudo pacman -S --needed --noconfirm \
 
 echo -e "${GREEN}✓ System dependencies installed${NC}"
 
-# ── Optional: Piper TTS ────────────────────────────────────────── #
+# ── Piper TTS (AUR) ────────────────────────────────────────────── #
 echo ""
 echo -e "${BLUE}→ Installing Piper TTS…${NC}"
-if ! command -v piper &> /dev/null; then
-    echo "Piper not found — attempting to install from AUR"
-    if command -v yay &> /dev/null; then
-        yay -S --needed --noconfirm piper-tts-bin
-    elif command -v paru &> /dev/null; then
-        paru -S --needed --noconfirm piper-tts-bin
-    else
-        echo -e "${YELLOW}⚠ No AUR helper found (install yay or paru)${NC}"
-        echo "Piper TTS can be installed manually from AUR: piper-tts-bin"
-    fi
+
+# The AUR piper-tts package installs its binary as `piper-tts`. Arch's own
+# `piper` package is the gaming-mouse tool, so never test for plain `piper`
+# first — you would "find" completely unrelated software.
+if command -v piper-tts &> /dev/null; then
+    echo -e "${GREEN}✓ piper-tts already installed${NC}"
 else
-    echo -e "${GREEN}✓ Piper already installed${NC}"
+    echo "piper-tts not found — installing from the AUR"
+    AUR_HELPER=""
+    command -v yay  &> /dev/null && AUR_HELPER="yay"
+    [ -z "$AUR_HELPER" ] && command -v paru &> /dev/null && AUR_HELPER="paru"
+
+    if [ -n "$AUR_HELPER" ]; then
+        if "$AUR_HELPER" -S --needed --noconfirm piper-tts; then
+            echo -e "${GREEN}✓ piper-tts installed${NC}"
+        else
+            echo -e "${YELLOW}⚠ piper-tts failed to build — falling back to espeak-ng.${NC}"
+            echo "   Retry later with: $AUR_HELPER -S piper-tts"
+        fi
+    else
+        echo -e "${YELLOW}⚠ No AUR helper found (install yay or paru).${NC}"
+        echo "   Then run:  yay -S piper-tts"
+        echo "   Until then NixOrb speaks through espeak-ng."
+    fi
 fi
 
 # ── Ollama ─────────────────────────────────────────────────────── #
@@ -153,19 +165,28 @@ fi
 
 # ── Piper voice model ──────────────────────────────────────────── #
 echo ""
-echo -e "${BLUE}→ Downloading Piper voice model…${NC}"
-VOICE_DIR="${HOME}/.local/share/piper/voices"
-mkdir -p "$VOICE_DIR"
+echo -e "${BLUE}→ Setting up Piper voice model…${NC}"
 
-if [ ! -f "$VOICE_DIR/en_US-lessac-medium.onnx" ]; then
-    cd "$VOICE_DIR"
-    curl -L -o en_US-lessac-medium.onnx \
-        "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx"
-    curl -L -o en_US-lessac-medium.onnx.json \
-        "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json"
-    echo -e "${GREEN}✓ Voice model downloaded${NC}"
+VOICE="en_US-lessac-medium"
+VOICE_DIR="${HOME}/.local/share/piper/voices"
+
+# NixOrb searches the AUR piper-voices layout too, so if the package is
+# already installed there is nothing to download.
+if find /usr/share/piper-voices -name "${VOICE}.onnx" 2>/dev/null | grep -q . ; then
+    echo -e "${GREEN}✓ ${VOICE} provided by the piper-voices package${NC}"
+elif [ -f "$VOICE_DIR/${VOICE}.onnx" ]; then
+    echo -e "${GREEN}✓ Voice model already downloaded${NC}"
 else
-    echo -e "${GREEN}✓ Voice model already exists${NC}"
+    mkdir -p "$VOICE_DIR"
+    BASE="https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium"
+    if curl -fL -o "$VOICE_DIR/${VOICE}.onnx"      "${BASE}/${VOICE}.onnx" \
+    && curl -fL -o "$VOICE_DIR/${VOICE}.onnx.json" "${BASE}/${VOICE}.onnx.json"; then
+        echo -e "${GREEN}✓ Voice model downloaded${NC}"
+    else
+        rm -f "$VOICE_DIR/${VOICE}.onnx" "$VOICE_DIR/${VOICE}.onnx.json"
+        echo -e "${YELLOW}⚠ Voice download failed — NixOrb will use espeak-ng.${NC}"
+        echo "   Or install the AUR package:  yay -S piper-voices-en-us"
+    fi
 fi
 
 # ── Desktop Entry ──────────────────────────────────────────────── #

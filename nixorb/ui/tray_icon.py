@@ -3,13 +3,24 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QIcon
+from PySide6.QtCore import QRect, Qt
+from PySide6.QtGui import QAction, QBrush, QColor, QIcon, QPainter, QPixmap, QRadialGradient
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
-from nixorb.core.event_bus import Event, bus
+from nixorb.core.event_bus import Event, EventPayload, bus
+from nixorb.ui.orb_window import STATE_COLORS
 
 log = logging.getLogger(__name__)
+
+# The orb has no caption at 88px, so the tray tooltip is where the state is
+# spelled out in words.
+STATE_LABELS: dict[str, str] = {
+    "idle": "Idle",
+    "listening": "Listening…",
+    "thinking": "Thinking…",
+    "speaking": "Speaking…",
+    "error": "Error",
+}
 
 
 class NixOrbTray(QSystemTrayIcon):
@@ -20,30 +31,64 @@ class NixOrbTray(QSystemTrayIcon):
         self._settings = settings
         self._app = app
 
+        self._state = "idle"
         self._setup_icon()
         self._setup_menu()
+        self._subscribe_events()
         self.setVisible(True)
 
     def _setup_icon(self) -> None:
-        """Set up the tray icon."""
-        # Use a standard icon as fallback
-        icon = QIcon.fromTheme("nixorb", QIcon.fromTheme("audio-input-microphone"))
-        if icon.isNull():
-            # Create a simple colored circle icon programmatically
-            from PySide6.QtCore import QRect
-            from PySide6.QtGui import QPainter, QPixmap
+        """Draw the tray icon in the current state colour."""
+        self.setIcon(self._render_icon(STATE_COLORS.get(self._state, STATE_COLORS["idle"])))
+        self._refresh_tooltip()
 
-            pixmap = QPixmap(32, 32)
-            pixmap.fill(Qt.GlobalColor.transparent)
-            painter = QPainter(pixmap)
-            painter.setBrush(Qt.GlobalColor.cyan)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawEllipse(QRect(2, 2, 28, 28))
-            painter.end()
-            icon = QIcon(pixmap)
+    @staticmethod
+    def _render_icon(hex_color: str) -> QIcon:
+        """A small shaded sphere matching the orb, not a flat cyan dot."""
+        size = 64
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.GlobalColor.transparent)
 
-        self.setIcon(icon)
-        self.setToolTip("NixOrb — AI Assistant")
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        base = QColor(hex_color)
+        gradient = QRadialGradient(size * 0.38, size * 0.34, size * 0.62)
+        gradient.setColorAt(0.0, base.lighter(155))
+        gradient.setColorAt(0.55, base)
+        gradient.setColorAt(1.0, base.darker(165))
+
+        painter.setBrush(QBrush(gradient))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(QRect(4, 4, size - 8, size - 8))
+        painter.end()
+
+        return QIcon(pixmap)
+
+    def _refresh_tooltip(self) -> None:
+        label = STATE_LABELS.get(self._state, self._state.title())
+        self.setToolTip(f"NixOrb — {label}")
+
+    def _subscribe_events(self) -> None:
+        """Mirror the orb's state in the tray icon and tooltip."""
+        for event, state in (
+            (Event.ORB_IDLE, "idle"),
+            (Event.ORB_LISTENING, "listening"),
+            (Event.ORB_THINKING, "thinking"),
+            (Event.ORB_SPEAKING, "speaking"),
+            (Event.ORB_ERROR, "error"),
+        ):
+            bus.subscribe(event, self._make_state_handler(state))
+
+    def _make_state_handler(self, state: str):
+        async def handler(_payload: EventPayload) -> None:
+            if state == self._state:
+                return
+            self._state = state
+            self.setIcon(self._render_icon(STATE_COLORS[state]))
+            self._refresh_tooltip()
+
+        return handler
 
     def _setup_menu(self) -> None:
         """Create the context menu."""

@@ -16,6 +16,11 @@ def test_defaults():
     assert s.require_action_confirmation is True
 
 
+def test_orb_is_small_by_default():
+    """88px reads as an accent on the desktop, not a bubble parked on it."""
+    assert Settings().orb_size == 88
+
+
 def test_wake_word_defaults_off():
     """openwakeword is the optional 'wakeword' extra, so it cannot default on."""
     assert Settings().wake_word_enabled is False
@@ -83,7 +88,7 @@ def test_bad_value_falls_back_to_defaults(tmp_path, monkeypatch):
     cfg = tmp_path / "config.toml"
     cfg.write_text('orb_size = "not a number"\n')
     monkeypatch.setenv(_CONFIG_ENV, str(cfg))
-    assert Settings.load().orb_size == 120
+    assert Settings.load().orb_size == 88
 
 
 def test_malformed_toml_falls_back_to_defaults(tmp_path, monkeypatch):

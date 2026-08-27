@@ -27,6 +27,36 @@ log = logging.getLogger(__name__)
 DEFAULT_VOICE = "en_US-lessac-medium"
 PIPER_VOICES_DIR = Path.home() / ".local" / "share" / "piper" / "voices"
 
+# The AUR's piper-tts package installs its binary as `piper-tts`, because
+# Arch's `piper` package is the gaming-mouse configuration tool — an entirely
+# unrelated program that would happily be found first. Prefer the unambiguous
+# name and only fall back to `piper` for other distros and pip installs.
+PIPER_BINARIES = ("piper-tts", "piper")
+
+# Where voice models end up. The AUR piper-voices packages use the upstream
+# nested layout (<lang>/<locale>/<name>/<quality>/), so those are searched
+# recursively rather than by exact path.
+VOICE_DIRS_FLAT = (
+    PIPER_VOICES_DIR,
+    Path.home() / ".piper" / "voices",
+    Path.home() / ".local" / "share" / "piper-voices",
+    Path("/usr/share/piper-voices"),
+    Path("/usr/share/piper/voices"),
+)
+VOICE_DIRS_NESTED = (
+    Path("/usr/share/piper-voices"),
+    Path.home() / ".local" / "share" / "piper-voices",
+)
+
+
+def find_piper_binary() -> str | None:
+    """Return the Piper executable to use, or None if it is not installed."""
+    for name in PIPER_BINARIES:
+        path = shutil.which(name)
+        if path:
+            return path
+    return None
+
 
 class PiperTTS:
     """Offline TTS using Piper with fallback to espeak-ng."""
@@ -41,21 +71,32 @@ class PiperTTS:
             self._speed = 1.0
             self._volume = 1.0
 
-        self._piper_available = shutil.which("piper") is not None
+        self._piper = find_piper_binary()
+        self._piper_available = self._piper is not None
         self._espeak_available = shutil.which("espeak-ng") is not None
         self._aplay_available = shutil.which("aplay") is not None
 
     def _find_voice_model(self) -> Path | None:
         """Find the Piper voice model file."""
-        # Check in standard locations
-        locations = [
-            PIPER_VOICES_DIR / f"{self._voice}.onnx",
-            Path("/usr/share/piper-voices") / f"{self._voice}.onnx",
-            Path.home() / ".piper" / "voices" / f"{self._voice}.onnx",
-        ]
-        for loc in locations:
-            if loc.exists():
-                return loc
+        filename = f"{self._voice}.onnx"
+
+        for directory in VOICE_DIRS_FLAT:
+            candidate = directory / filename
+            if candidate.exists():
+                return candidate
+
+        # AUR piper-voices keeps upstream's nested layout, e.g.
+        # /usr/share/piper-voices/en/en_US/lessac/medium/en_US-lessac-medium.onnx
+        for directory in VOICE_DIRS_NESTED:
+            if not directory.is_dir():
+                continue
+            try:
+                match = next(directory.rglob(filename), None)
+            except OSError:
+                continue
+            if match is not None:
+                return match
+
         return None
 
     @property
@@ -81,7 +122,7 @@ class PiperTTS:
         else:
             msg = (
                 "No TTS engine installed — NixOrb will stay silent. "
-                "Install piper-tts-bin or espeak-ng."
+                "Install the AUR's piper-tts, or espeak-ng."
             )
             log.error("TTS: %s", msg)
             await bus.emit(Event.TTS_ERROR, data={"error": msg},
@@ -110,7 +151,7 @@ class PiperTTS:
             # Run piper to generate WAV audio
             proc = subprocess.Popen(
                 [
-                    "piper",
+                    str(self._piper),
                     "--model", str(model_path),
                     "--config", str(config_path) if config_path.exists() else "",
                     "--output_file", "-",
@@ -219,7 +260,7 @@ class PiperTTS:
 
         try:
             proc = await asyncio.create_subprocess_exec(
-                "piper",
+                str(self._piper),
                 "--model", str(model_path),
                 "--output_file", str(output_path),
                 "--length-scale", str(1.0 / self._speed),

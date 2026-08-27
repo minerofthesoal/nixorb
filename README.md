@@ -34,10 +34,16 @@ chmod +x install.sh
 
 ```bash
 nixorb start          # Launch the floating orb
+nixorb trigger        # Activate the running orb (bind to a KDE shortcut)
 nixorb status         # Check system status
+nixorb quit           # Shut the running orb down
 nixorb ask "What is 2+2?"   # One-shot query
 nixorb check          # Check dependencies
 ```
+
+`nixorb trigger` talks to the running instance over a Unix socket in
+`$XDG_RUNTIME_DIR`, so it works the same under Wayland, X11, or a bare TTY —
+which is what makes it usable as a KDE global shortcut.
 
 ## Pipeline Flow
 
@@ -66,6 +72,7 @@ Edit `~/.config/nixorb/config.toml` or use the GUI (right-click orb → Settings
 
 ```toml
 hotkey = "Ctrl+Alt+Space"
+orb_size = 88
 llm_model = "llama3.2"
 ollama_host = "http://localhost:11434"
 tts_backend = "piper"
@@ -79,12 +86,25 @@ require_action_confirmation = true
 
 See `config/default.toml` for every option with comments.
 
+## Orb States
+
+The orb has no caption — its colour is the state, and the tray tooltip spells
+it out in words.
+
+| State | Colour | Meaning |
+|-------|--------|---------|
+| Idle | Clay `#C96442` | Waiting for you |
+| Listening | Sage `#5E9C7E` | Recording; the ring tracks your voice |
+| Thinking | Amber `#D9A441` | Querying the model |
+| Speaking | Lit clay `#E08A62` | Talking back |
+| Error | Rust `#B3453E` | Something failed — check the log |
+
 ## Keyboard Shortcuts
 
 | Action | Default | Notes |
 |--------|---------|-------|
 | Activate | `Ctrl+Alt+Space` | Global hotkey (via pynput/XWayland) |
-| KDE Shortcut | Custom | Set in System Settings → Shortcuts |
+| KDE Shortcut | Custom | System Settings → Shortcuts, running `nixorb trigger` |
 | Orb double-click | Double-click | Direct activation |
 | Orb right-click | Right-click | Menu: Activate / Settings / Quit |
 | Opacity | Scroll wheel | While hovering over orb |
@@ -111,7 +131,10 @@ nixorb/
 
 ## Dependencies
 
-- **System**: `python 3.12+`, `qt6-base`, `qt6-declarative`, `qt6-wayland`, `portaudio`, `wl-clipboard`, `grim`, `piper-tts`, `ollama`
+- **System**: `python 3.12+`, `qt6-base`, `qt6-declarative`, `qt6-wayland`, `portaudio`, `wl-clipboard`, `grim`, `ollama`
+- **AUR**: `piper-tts` (speech). Note its binary is `piper-tts` — Arch's
+  `piper` package is the unrelated gaming-mouse tool. `espeak-ng` is the
+  fallback if Piper is missing.
 - **Python**: See `requirements.txt` / `pyproject.toml`
 
 ## Troubleshooting
@@ -125,7 +148,8 @@ and whether the configured model is installed.
 | Orb never appears | `qt6-declarative` and `qt6-wayland` installed? The log prints any QML error. |
 | `nixorb: command not found` | `~/.local/bin` on your `PATH` (the installer links it there). |
 | Orb appears, nothing happens on activate | `nixorb status` — Ollama unreachable, or the model isn't pulled. |
-| It speaks no audio | Install `piper-tts-bin` or `espeak-ng`; the log says which is missing. |
+| It speaks no audio | `yay -S piper-tts` (AUR), or install `espeak-ng`; the log says which is missing. |
+| `nixorb trigger` says not running | Start the orb first; `nixorb status` shows the control socket. |
 | Commands are always denied | Approve the confirmation dialog, or set `require_action_confirmation = false`. |
 | Actions do nothing when run as root | NixOrb disables command execution as root — run it as your normal user. |
 

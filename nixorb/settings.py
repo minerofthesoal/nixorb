@@ -22,7 +22,7 @@ class Settings(BaseModel):
     # ── Orb UI ───────────────────────────────────────────────────── #
     orb_x: int | None = None
     orb_y: int | None = None
-    orb_size: int = 120
+    orb_size: int = 88
     orb_opacity: float = 1.0
     hotkey: str = "Ctrl+Alt+Space"
 

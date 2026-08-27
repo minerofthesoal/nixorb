@@ -25,7 +25,7 @@ class TestSettings:
         assert s.tts_backend == "piper"
         # Off by default — openwakeword is the optional 'wakeword' extra.
         assert s.wake_word_enabled is False
-        assert s.orb_size == 120
+        assert s.orb_size == 88
 
     def test_settings_save_load(self, tmp_path):
         import os

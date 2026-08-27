@@ -3,7 +3,8 @@
 Usage:
     nixorb start              Launch the GUI orb
     nixorb start --headless   Daemon mode (no Qt)
-    nixorb trigger            Trigger activation (for KDE shortcuts)
+    nixorb trigger            Activate the running orb (for KDE shortcuts)
+    nixorb quit               Shut down the running orb
     nixorb ask "query"        One-shot text query
     nixorb tts "text"         Speak text
     nixorb status             Show system status
@@ -47,13 +48,35 @@ def start(
     raise typer.Exit(main() or 0)
 
 
+def _control(command: str, success: str) -> None:
+    """Send one command to the running instance, or explain why we can't."""
+    from nixorb.core.ipc import send
+
+    try:
+        reply = send(command)
+    except ConnectionError:
+        typer.echo(
+            "NixOrb is not running — start it with:  nixorb start", err=True
+        )
+        raise typer.Exit(1) from None
+
+    if reply.startswith("ok"):
+        typer.echo(success)
+    else:
+        typer.echo(f"❌ {reply}", err=True)
+        raise typer.Exit(1)
+
+
 @app.command()
 def trigger() -> None:
-    """Trigger NixOrb activation (for KDE shortcuts)."""
-    # This would communicate with a running NixOrb instance
-    typer.echo("Triggering NixOrb activation…")
-    # TODO: Implement IPC to running instance
-    typer.echo("(Not yet implemented — double-click the orb instead)")
+    """Activate the running orb (bind this to a KDE global shortcut)."""
+    _control("trigger", "🔔 NixOrb activated")
+
+
+@app.command()
+def quit() -> None:  # noqa: A001 — this is the user-facing command name
+    """Ask the running NixOrb to shut down."""
+    _control("quit", "👋 NixOrb shutting down")
 
 
 @app.command()
@@ -122,6 +145,15 @@ def status() -> None:
     typer.echo(f"  NixOrb {nixorb.__version__}")
     typer.echo("═" * 50)
 
+    from nixorb.core.ipc import is_running, socket_path
+
+    typer.echo("\n🌐 Orb:")
+    if is_running():
+        typer.echo(f"  ✅ Running (control socket: {socket_path()})")
+        typer.echo("     Activate with: nixorb trigger")
+    else:
+        typer.echo("  ⭘ Not running — start it with: nixorb start")
+
     # Check Ollama
     typer.echo("\n🤖 AI Backend:")
     typer.echo(f"  Backend: {settings.llm_backend}")
@@ -146,7 +178,7 @@ def status() -> None:
     # Check dependencies
     typer.echo("\n📦 Dependencies:")
     deps = {
-        "piper": "TTS engine",
+        "piper-tts": "TTS engine (AUR: piper-tts)",
         "wl-paste": "Clipboard (Wayland)",
         "grim": "Screenshot",
         "espeak-ng": "TTS fallback",
@@ -194,7 +226,7 @@ def check() -> None:
     """Check system dependencies."""
     required = ["python", "pip"]
     recommended = [
-        "piper", "wl-paste", "wl-copy", "grim", "espeak-ng",
+        "wl-paste", "wl-copy", "grim", "espeak-ng",
         "bwrap", "ollama", "nvidia-smi",
     ]
 
@@ -204,6 +236,17 @@ def check() -> None:
         typer.echo(f"  {'✅' if found else '❌'} {dep}")
 
     typer.echo("\nRecommended:")
+
+    # Piper needs its own lookup: the AUR package installs `piper-tts`, and
+    # a bare `piper` on Arch is the gaming-mouse tool, not a speech engine.
+    from nixorb.tts.piper_tts import find_piper_binary
+
+    piper = find_piper_binary()
+    typer.echo(
+        f"  {'✅' if piper else '❌'} piper-tts"
+        + (f" ({piper})" if piper else "  — install with: yay -S piper-tts")
+    )
+
     for dep in recommended:
         found = shutil.which(dep)
         typer.echo(f"  {'✅' if found else '❌'} {dep}")
