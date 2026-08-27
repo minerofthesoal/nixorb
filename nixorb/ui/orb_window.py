@@ -37,13 +37,15 @@ log = logging.getLogger(__name__)
 QML_IMPORT_NAME = "NixOrb"
 QML_IMPORT_MAJOR_VERSION = 1
 
-# State → color mapping
+# State → colour. Anchored on Claude's clay so the orb reads as part of the
+# same family at rest, with distinct hues only where you need to tell states
+# apart at a glance.
 STATE_COLORS: dict[str, str] = {
-    "idle": "#4A90D9",
-    "listening": "#2ECC71",
-    "thinking": "#F39C12",
-    "speaking": "#9B59B6",
-    "error": "#E74C3C",
+    "idle": "#C96442",       # clay — resting
+    "listening": "#5E9C7E",  # sage — capturing
+    "thinking": "#D9A441",   # amber — working
+    "speaking": "#E08A62",   # lit clay — talking
+    "error": "#B3453E",      # rust — failed
 }
 
 
@@ -57,7 +59,7 @@ class OrbBridge(QObject):
     opacityChanged = Signal(float)
     orbSizeChanged = Signal(int)
 
-    def __init__(self, parent: QObject | None = None, orb_size: int = 120) -> None:
+    def __init__(self, parent: QObject | None = None, orb_size: int = 88) -> None:
         super().__init__(parent)
         self._state = "idle"
         self._amplitude = 0.0

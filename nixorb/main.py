@@ -101,6 +101,7 @@ async def _async_main(settings, app) -> None:
     from PySide6.QtWidgets import QSystemTrayIcon
 
     from nixorb.core.event_bus import Event, bus
+    from nixorb.core.ipc import IPCServer
     from nixorb.core.vram_manager import vram
     from nixorb.memory.vector_store import VectorMemory
     from nixorb.ui.orb_window import OrbWindow
@@ -121,6 +122,7 @@ async def _async_main(settings, app) -> None:
     asr = None
     llm = None
     wake_word = None
+    ipc = None
     background: set[asyncio.Task] = set()
 
     try:
@@ -193,6 +195,36 @@ async def _async_main(settings, app) -> None:
         plugin_loader = PluginLoader(settings.plugin_dir)
         if settings.plugins_enabled:
             plugin_loader.load_all()
+
+        # ── Control socket ───────────────────────────────────────── #
+        # This is what makes `nixorb trigger` work, and with it any KDE
+        # global shortcut bound to that command.
+        async def _ipc_trigger(_cmd: str) -> str:
+            await bus.emit(Event.HOTKEY_TRIGGERED, source="ipc")
+            return "ok: triggered"
+
+        async def _ipc_status(_cmd: str) -> str:
+            health = await llm.health_check()
+            return (
+                f"ok: model={settings.llm_model} "
+                f"llm={'up' if health['ok'] else 'down'} "
+                f"actions={'on' if executor else 'off'}"
+            )
+
+        async def _ipc_quit(_cmd: str) -> str:
+            await bus.emit(Event.SHUTDOWN, source="ipc")
+            return "ok: shutting down"
+
+        ipc = IPCServer({
+            "trigger": _ipc_trigger,
+            "status": _ipc_status,
+            "quit": _ipc_quit,
+        })
+        if not await ipc.start():
+            log.warning(
+                "IPC: control socket unavailable — `nixorb trigger` will not "
+                "reach this instance"
+            )
 
         # ── Preload ASR model ────────────────────────────────────────── #
         async def _preload_asr() -> None:
@@ -321,9 +353,13 @@ async def _async_main(settings, app) -> None:
             # Build user message with context
             user_msg = transcript
 
-            # Add memory context
+            # Add memory context. Embedding runs ONNX inference, so it goes
+            # off-thread: on the loop, the first query froze the orb (and the
+            # control socket) for over ten seconds.
             if settings.memory_enabled:
-                mem_ctx = memory.build_context_block(transcript)
+                mem_ctx = await asyncio.to_thread(
+                    memory.build_context_block, transcript
+                )
                 if mem_ctx:
                     user_msg = mem_ctx + transcript
 
@@ -388,11 +424,12 @@ async def _async_main(settings, app) -> None:
                 source="main",
             )
 
-            # Store in memory
+            # Store in memory (also an embedding call — same treatment).
             if settings.memory_enabled:
-                memory.store(
+                await asyncio.to_thread(
+                    memory.store,
                     f"User: {transcript}\nAssistant: {response[:600]}",
-                    metadata={"type": "conversation"},
+                    {"type": "conversation"},
                 )
 
             # Execute any actions
@@ -535,6 +572,10 @@ async def _async_main(settings, app) -> None:
         if wake_word is not None:
             wake_word.stop()
 
+        if ipc is not None:
+            with contextlib.suppress(Exception):
+                await ipc.stop()
+
         for task in list(background):
             task.cancel()
         if background:
@@ -580,7 +621,17 @@ def main() -> int:
         )
         return 1
 
+    from nixorb.core.ipc import is_running, socket_path
     from nixorb.settings import Settings
+
+    if is_running():
+        log.error(
+            "NixOrb is already running (control socket: %s).\n"
+            "  Activate it with:  nixorb trigger\n"
+            "  Stop it with:      nixorb quit",
+            socket_path(),
+        )
+        return 1
 
     settings = Settings.load()
 

@@ -141,3 +141,77 @@ def test_speed_maps_to_length_scale(speed):
 
     engine = PiperTTS(Settings(tts_speed=speed))
     assert 1.0 / engine._speed == pytest.approx(1.0 / speed)
+
+
+# ── Piper discovery (AUR piper-tts) ──────────────────────────────── #
+
+def test_prefers_piper_tts_over_piper():
+    """Arch's `piper` package is the gaming-mouse tool, not a speech engine.
+
+    The AUR piper-tts package installs `piper-tts`, so that name must win.
+    """
+    from nixorb.tts import piper_tts
+
+    seen = []
+
+    def _which(name):
+        seen.append(name)
+        return f"/usr/bin/{name}" if name in ("piper-tts", "piper") else None
+
+    with patch.object(piper_tts.shutil, "which", _which):
+        assert piper_tts.find_piper_binary() == "/usr/bin/piper-tts"
+    assert seen[0] == "piper-tts"
+
+
+def test_falls_back_to_plain_piper():
+    """pip installs and other distros still ship it as `piper`."""
+    from nixorb.tts import piper_tts
+
+    with patch.object(
+        piper_tts.shutil, "which",
+        lambda n: "/usr/bin/piper" if n == "piper" else None,
+    ):
+        assert piper_tts.find_piper_binary() == "/usr/bin/piper"
+
+
+def test_no_piper_binary_returns_none():
+    from nixorb.tts import piper_tts
+
+    with patch.object(piper_tts.shutil, "which", lambda _n: None):
+        assert piper_tts.find_piper_binary() is None
+
+
+def test_finds_voice_in_the_aur_nested_layout(tmp_path):
+    """piper-voices keeps upstream's <lang>/<locale>/<name>/<quality>/ tree."""
+    from nixorb.tts import piper_tts
+
+    nested = tmp_path / "en" / "en_US" / "lessac" / "medium"
+    nested.mkdir(parents=True)
+    model = nested / "en_US-lessac-medium.onnx"
+    model.write_bytes(b"")
+
+    engine = _tts(piper=True, espeak=False)
+    with patch.object(piper_tts, "VOICE_DIRS_FLAT", ()), \
+         patch.object(piper_tts, "VOICE_DIRS_NESTED", (tmp_path,)):
+        assert engine._find_voice_model() == model
+
+
+def test_finds_voice_in_a_flat_directory(tmp_path):
+    from nixorb.tts import piper_tts
+
+    model = tmp_path / "en_US-lessac-medium.onnx"
+    model.write_bytes(b"")
+
+    engine = _tts(piper=True, espeak=False)
+    with patch.object(piper_tts, "VOICE_DIRS_FLAT", (tmp_path,)), \
+         patch.object(piper_tts, "VOICE_DIRS_NESTED", ()):
+        assert engine._find_voice_model() == model
+
+
+def test_missing_voice_returns_none(tmp_path):
+    from nixorb.tts import piper_tts
+
+    engine = _tts(piper=True, espeak=False)
+    with patch.object(piper_tts, "VOICE_DIRS_FLAT", (tmp_path,)), \
+         patch.object(piper_tts, "VOICE_DIRS_NESTED", (tmp_path,)):
+        assert engine._find_voice_model() is None

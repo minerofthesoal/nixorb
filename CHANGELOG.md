@@ -1,3 +1,53 @@
+## [2.0.2] — 2026-08-27
+
+### Changed
+- **Redrew the orb.** The sphere is now a real radial-gradient render (Canvas)
+  with an off-axis key light, limb darkening, a bounce light along the lower
+  limb and a soft specular — instead of stacked flat circles with a linear
+  gradient. It is painted once per state change; the bloom, pulse and audio
+  ring animate as plain transforms, so nothing repaints at 60fps.
+- **Smaller**: default `orb_size` 120 → 88.
+- **Themed**: the palette is anchored on Claude's clay, so the orb reads as
+  one family at rest — clay (idle), sage (listening), amber (thinking), lit
+  clay (speaking), rust (error). The tray icon is now a shaded sphere in the
+  same palette rather than a flat cyan dot, and tracks the state.
+- Dropped the state caption: at 88px it collided with the audio ring and was
+  illegible on a light desktop. The tray tooltip carries the state in words.
+
+### Added
+- **`nixorb trigger` actually works.** It was a stub that printed "not yet
+  implemented", which meant the documented KDE global-shortcut setup did
+  nothing. Added a Unix-socket control channel in `$XDG_RUNTIME_DIR`
+  (`nixorb/core/ipc.py`); `nixorb trigger` activates the running orb,
+  `nixorb quit` shuts it down, and `nixorb status` reports whether an
+  instance is up. No D-Bus dependency, works under Wayland, X11 and a TTY.
+- Starting a second instance is now refused — two orbs would fight over the
+  microphone.
+
+### Fixed
+- **ChromaDB ran on the event loop mid-turn.** `build_context_block()` and
+  `store()` do ONNX embedding inference synchronously; on the first query
+  that froze the whole app for ~14 seconds (measured), taking the control
+  socket down with it. Both now run off-thread.
+- An IPC handler that raised closed the connection without a reply, leaving
+  the client with an empty string; it now answers with the error.
+- `IPCServer.start()` probed for a live peer with a blocking call from inside
+  its own loop, so it always concluded "nobody home" and would have unlinked
+  a live socket. The probe is async now.
+
+### Changed — packaging
+- Piper now comes from the AUR's **`piper-tts`** package rather than
+  `piper-tts-bin`. Its binary is `piper-tts`, and NixOrb prefers that name:
+  Arch's `piper` package is the gaming-mouse configuration tool, so testing
+  for a bare `piper` finds unrelated software. Plain `piper` is still
+  accepted as a fallback for pip installs and other distros.
+- Voice lookup understands the AUR `piper-voices` layout
+  (`<lang>/<locale>/<name>/<quality>/`), so an installed voice package is
+  found instead of being re-downloaded.
+- `install.sh` skips the HuggingFace voice download when the AUR package
+  already provides the voice, and no longer aborts the install if Piper
+  fails to build — it falls back to espeak-ng and says so.
+
 ## [2.0.1] — 2026-08-27
 
 ### Fixed — startup
