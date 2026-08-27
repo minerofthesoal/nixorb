@@ -33,12 +33,14 @@ dependencies = [
     "typer[all]>=0.12.3",
     "chromadb>=0.5.3",
     "pynput>=1.7.6",
+    "cryptography>=42.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
+    "pytest-aiohttp>=1.0",
     "pytest-qt>=4.2",
     "ruff>=0.4",
     "mypy>=1.10",

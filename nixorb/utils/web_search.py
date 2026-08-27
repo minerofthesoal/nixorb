@@ -26,9 +26,9 @@ async def search_formatted(query: str, max_results: int = 4) -> str:
         Formatted search results for LLM context
     """
     try:
-        results = await _search_duckduckgo(query, max_results)
+        results = await search(query, max_results)
         if not results:
-            return "\n[Web search: No results found]\n"
+            return "\n[Web search: No search results found]\n"
 
         formatted = ["\n[Web search results]:"]
         for i, result in enumerate(results[:max_results], 1):
@@ -43,8 +43,18 @@ async def search_formatted(query: str, max_results: int = 4) -> str:
         return f"\n[Web search: Error — {exc}]\n"
 
 
-async def _search_duckduckgo(query: str, max_results: int) -> list[dict]:
-    """Search DuckDuckGo and parse results."""
+async def search(query: str, max_results: int = 4) -> list[dict]:
+    """Search DuckDuckGo and return parsed results. Never raises."""
+    try:
+        html = await _fetch(query)
+    except Exception as exc:
+        log.warning("Web search fetch failed: %s", exc)
+        return []
+    return parse_results(html, max_results)
+
+
+async def _fetch(query: str) -> str:
+    """Fetch the DuckDuckGo HTML results page."""
     async with aiohttp.ClientSession(
         timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
     ) as session:
@@ -59,9 +69,12 @@ async def _search_duckduckgo(query: str, max_results: int) -> list[dict]:
         async with session.get(
             DUCKDUCKGO_URL, params=params, headers=headers
         ) as resp:
-            html = await resp.text()
+            resp.raise_for_status()
+            return await resp.text()
 
-    # Simple HTML parsing
+
+def parse_results(html: str, max_results: int = 4) -> list[dict]:
+    """Parse DuckDuckGo's HTML results page."""
     from html.parser import HTMLParser
 
     class ResultParser(HTMLParser):

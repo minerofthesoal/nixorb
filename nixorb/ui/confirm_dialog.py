@@ -1,97 +1,64 @@
 """NixOrb action confirmation dialog.
 
-Shows a modal dialog when the AI wants to execute a potentially
-destructive command, requiring explicit user confirmation.
+Shows a modal dialog when the AI wants to execute a potentially destructive
+command. This is the other half of the handshake described in
+``nixorb/action/executor.py``: it answers every ACTION_REQUESTED with either
+ACTION_CONFIRMED or ACTION_DENIED carrying the same ``request_id``.
+
+Nothing used to subscribe to ACTION_REQUESTED, so the executor's wait always
+timed out and every command was silently denied.
 """
 from __future__ import annotations
 
-import asyncio
+import inspect
 import logging
+from collections.abc import Callable
 from typing import Any
 
-from PySide6.QtWidgets import (
-    QDialog,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QTextEdit,
-    QVBoxLayout,
-)
-
-from nixorb.core.event_bus import Event, EventPayload, bus
+from nixorb.core.event_bus import Event, EventBus, EventPayload
+from nixorb.core.event_bus import bus as default_bus
 
 log = logging.getLogger(__name__)
 
-# Commands that are always denied
-HARD_DENYLIST = {
-    "rm -rf /",
-    "rm -rf /*",
-    "dd if=/dev/zero of=/dev/sda",
-    "mkfs.",
-    ":(){ :|:& };:",
-    "> /dev/sda",
-}
-
-# Commands that require confirmation
-REQUIRE_CONFIRM = {
-    "rm -rf",
-    "rm -r",
-    "dd ",
-    "mkfs",
-    "fdisk",
-    "parted",
-    "chmod -R",
-    "chown -R",
-    "pacman -R",
-    "pacman -S",
-    "systemctl stop",
-    "systemctl disable",
-    "kill ",
-    "pkill",
-    "curl",
-    "wget",
-    "pip install",
-    "pip uninstall",
-}
+AskFn = Callable[[str], Any]
 
 
-def _is_dangerous(command: str) -> bool:
-    """Check if a command requires confirmation."""
-    cmd_lower = command.lower().strip()
-
-    # Hard denylist
-    if any(denied in cmd_lower for denied in HARD_DENYLIST):
-        return True
-
-    # Confirmation required
-    return any(pattern in cmd_lower for pattern in REQUIRE_CONFIRM)
-
-
-def _should_confirm(command: str) -> bool:
-    """Check if a command should show the confirmation dialog."""
-    return _is_dangerous(command)
-
-
-class ConfirmDialog(QDialog):
-    """Modal dialog for command confirmation."""
+class ConfirmDialog:
+    """Modal dialog asking the user to approve a command."""
 
     def __init__(self, command: str, parent: Any = None) -> None:
-        super().__init__(parent)
-        self._command = command
-        self._result = False
+        # Qt is imported lazily so this module can be imported (and the
+        # handshake tested) in a headless environment.
+        from PySide6.QtWidgets import (
+            QDialog,
+            QHBoxLayout,
+            QLabel,
+            QPushButton,
+            QTextEdit,
+            QVBoxLayout,
+        )
 
-        self.setWindowTitle("NixOrb — Confirm Action")
-        self.setModal(True)
-        self.setMinimumWidth(500)
+        self._dialog = QDialog(parent)
+        self._dialog.setWindowTitle("NixOrb — Confirm Action")
+        self._dialog.setModal(True)
+        self._dialog.setMinimumWidth(500)
 
         layout = QVBoxLayout()
 
-        # Warning label
-        warning = QLabel("⚠️ NixOrb wants to execute a command:")
-        warning.setStyleSheet("font-weight: bold; font-size: 14px;")
+        from nixorb.action.executor import is_high_risk
+
+        high_risk = is_high_risk(command)
+        warning = QLabel(
+            "🛑 NixOrb wants to run a HIGH-RISK command:"
+            if high_risk
+            else "⚠️ NixOrb wants to execute a command:"
+        )
+        warning.setStyleSheet(
+            "font-weight: bold; font-size: 14px;"
+            + (" color: #e74c3c;" if high_risk else "")
+        )
         layout.addWidget(warning)
 
-        # Command display
         cmd_display = QTextEdit()
         cmd_display.setPlainText(command)
         cmd_display.setReadOnly(True)
@@ -101,125 +68,91 @@ class ConfirmDialog(QDialog):
         )
         layout.addWidget(cmd_display)
 
-        # Info label
-        info = QLabel("This command may modify your system. Only approve if you trust it.")
+        info = QLabel(
+            "This command may modify your system. Only approve if you trust it."
+        )
         info.setStyleSheet("color: #888;")
         layout.addWidget(info)
 
-        # Buttons
         button_layout = QHBoxLayout()
 
         deny_btn = QPushButton("❌ Deny")
         deny_btn.setStyleSheet("background-color: #c0392b; color: white;")
-        deny_btn.clicked.connect(self._on_deny)
+        deny_btn.clicked.connect(self._dialog.reject)
         button_layout.addWidget(deny_btn)
 
         button_layout.addStretch()
 
         approve_btn = QPushButton("✅ Approve")
         approve_btn.setStyleSheet("background-color: #27ae60; color: white;")
-        approve_btn.setDefault(True)
-        approve_btn.clicked.connect(self._on_approve)
+        # Deny is the default so a stray Enter cannot approve anything.
+        deny_btn.setDefault(True)
+        approve_btn.clicked.connect(self._dialog.accept)
         button_layout.addWidget(approve_btn)
 
         layout.addLayout(button_layout)
-        self.setLayout(layout)
+        self._dialog.setLayout(layout)
+        self._accepted_code = QDialog.DialogCode.Accepted
 
-    def _on_approve(self) -> None:
-        self._result = True
-        self.accept()
+    def exec(self) -> bool:
+        """Show the dialog and return True if the user approved."""
+        return self._dialog.exec() == self._accepted_code
 
-    def _on_deny(self) -> None:
-        self._result = False
-        self.reject()
+    @classmethod
+    def ask(cls, command: str) -> bool:
+        """Show a confirmation dialog for ``command``. Never raises."""
+        try:
+            return cls(command).exec()
+        except Exception as exc:
+            # No display, no QApplication, Qt blew up — fail closed.
+            log.error("Confirm: could not show dialog (%s) — denying", exc)
+            return False
 
-    def get_result(self) -> bool:
-        return self._result
 
+def register_confirmation_handler(
+    bus: EventBus | None = None,
+    event: Event = Event.ACTION_REQUESTED,
+    ask_fn: AskFn | None = None,
+) -> None:
+    """Wire the confirmation dialog onto the event bus.
 
-# Global pending confirmations
-_pending_confirmations: dict[str, asyncio.Future[bool]] = {}
-
-
-def register_confirmation_handler() -> None:
-    """Register the event bus handler for action confirmations."""
+    Args:
+        bus: bus to subscribe on (defaults to the global singleton).
+        event: event to listen for (defaults to ACTION_REQUESTED).
+        ask_fn: callable taking the command and returning a bool. Defaults to
+            the real Qt dialog; tests inject a stub.
+    """
+    target_bus = bus if bus is not None else default_bus
 
     async def _handle_action_requested(payload: EventPayload) -> None:
         data = payload.data or {}
         command = data.get("command", "")
         request_id = data.get("request_id", "")
 
-        if not _should_confirm(command):
-            # Auto-approve safe commands
-            bus.emit_sync(
-                Event.ACTION_CONFIRMED,
-                data={"request_id": request_id, "command": command},
-                source="confirm_dialog",
-            )
-            return
+        # Resolved late so tests can patch ConfirmDialog.ask after wiring.
+        ask = ask_fn if ask_fn is not None else ConfirmDialog.ask
 
-        # Check hard denylist
-        cmd_lower = command.lower().strip()
-        for denied in HARD_DENYLIST:
-            if denied in cmd_lower:
-                log.warning("Confirm: hard-denied command: %s", command)
-                bus.emit_sync(
-                    Event.ACTION_DENIED,
-                    data={
-                        "request_id": request_id,
-                        "command": command,
-                        "reason": "Hard denylist",
-                    },
-                    source="confirm_dialog",
-                )
-                return
-
-        # Show confirmation dialog on main thread
-        future: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
-        _pending_confirmations[request_id] = future
-
-        def _show_dialog() -> None:
-            try:
-                dialog = ConfirmDialog(command)
-                result = dialog.exec() == QDialog.DialogCode.Accepted
-                if not future.done():
-                    future.set_result(result)
-            except Exception as exc:
-                log.error("Confirm dialog error: %s", exc)
-                if not future.done():
-                    future.set_result(False)
-
-        # Schedule on Qt main thread
-        from PySide6.QtCore import QTimer
-
-        QTimer.singleShot(0, _show_dialog)
-
-        # Wait for user response
         try:
-            approved = await asyncio.wait_for(future, timeout=60.0)
-        except TimeoutError:
-            log.warning("Confirm: timeout waiting for user response")
+            answer = ask(command)
+            # The dialog is modal on purpose: the user is expected to answer
+            # before anything else happens.
+            approved = bool(await answer if inspect.isawaitable(answer) else answer)
+        except Exception as exc:
+            log.error("Confirm: ask_fn failed for '%s' (%s) — denying",
+                      command, exc)
             approved = False
 
-        if request_id in _pending_confirmations:
-            del _pending_confirmations[request_id]
+        reply = Event.ACTION_CONFIRMED if approved else Event.ACTION_DENIED
+        await target_bus.emit(
+            reply,
+            data={
+                "request_id": request_id,
+                "command": command,
+                "reason": "" if approved else "User denied",
+            },
+            source="confirm_dialog",
+            priority=1,
+        )
 
-        if approved:
-            bus.emit_sync(
-                Event.ACTION_CONFIRMED,
-                data={"request_id": request_id, "command": command},
-                source="confirm_dialog",
-            )
-        else:
-            bus.emit_sync(
-                Event.ACTION_DENIED,
-                data={
-                    "request_id": request_id,
-                    "command": command,
-                    "reason": "User denied",
-                },
-                source="confirm_dialog",
-            )
-
-    bus.subscribe(Event.ACTION_REQUESTED, _handle_action_requested)
-    log.info("ConfirmDialog: handler registered")
+    target_bus.subscribe(event, _handle_action_requested)
+    log.info("ConfirmDialog: handler registered for %s", event.name)

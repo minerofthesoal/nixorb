@@ -55,13 +55,15 @@ class OrbBridge(QObject):
     amplitudeChanged = Signal(float)
     colorChanged = Signal(str)
     opacityChanged = Signal(float)
+    orbSizeChanged = Signal(int)
 
-    def __init__(self, parent: QObject | None = None) -> None:
+    def __init__(self, parent: QObject | None = None, orb_size: int = 120) -> None:
         super().__init__(parent)
         self._state = "idle"
         self._amplitude = 0.0
         self._color = STATE_COLORS["idle"]
         self._opacity = 1.0
+        self._orb_size = int(orb_size)
 
     @Property(str, notify=stateChanged)
     def state(self) -> str:
@@ -78,6 +80,21 @@ class OrbBridge(QObject):
     @Property(float, notify=opacityChanged)
     def opacity(self) -> float:
         return self._opacity
+
+    @Property(int, notify=orbSizeChanged)
+    def orbSize(self) -> int:
+        return self._orb_size
+
+    def current_opacity(self) -> float:
+        """Plain accessor — `opacity` is a Qt Property, not a float."""
+        return self._opacity
+
+    @Slot(int)
+    def setOrbSize(self, size: int) -> None:
+        size = max(32, int(size))
+        if size != self._orb_size:
+            self._orb_size = size
+            self.orbSizeChanged.emit(size)
 
     @Slot(str)
     def setState(self, state: str) -> None:
@@ -110,6 +127,11 @@ class OrbBridge(QObject):
 
         SettingsWindow.show_singleton()
 
+    def sync_from_settings(self, settings) -> None:
+        """Re-read values that the settings dialog may have changed."""
+        self.setOrbSize(settings.orb_size)
+        self.setOpacity(settings.orb_opacity)
+
 
 class OrbWindow(QQuickView):
     """The main floating orb window."""
@@ -118,7 +140,7 @@ class OrbWindow(QQuickView):
         super().__init__()
         self._settings = settings
         self._drag_pos: QPointF | None = None
-        self._bridge = OrbBridge()
+        self._bridge = OrbBridge(orb_size=settings.orb_size)
         self._target_amp = 0.0
         self._current_amp = 0.0
 
@@ -137,8 +159,12 @@ class OrbWindow(QQuickView):
         )
         self.setColor(QColor(0, 0, 0, 0))
 
-        size = self._settings.orb_size
+        # The window drives the QML root's size, not the other way around.
+        self.setResizeMode(QQuickView.ResizeMode.SizeRootObjectToView)
+
+        size = max(32, int(self._settings.orb_size))
         self.resize(QSize(size, size))
+        self.setMinimumSize(QSize(size, size))
 
         # Position: top-right corner as default
         screen = QApplication.primaryScreen()
@@ -170,7 +196,12 @@ class OrbWindow(QQuickView):
 
         qml_path = asset_path("orb.qml")
         if not qml_path.exists():
-            log.error("Orb: QML file not found at %s", qml_path)
+            log.error(
+                "Orb: QML file not found at %s — NixOrb cannot draw the orb. "
+                "Reinstall, or check that the assets/ directory shipped with "
+                "this install.",
+                qml_path,
+            )
             return
 
         self.setSource(QUrl.fromLocalFile(str(qml_path.resolve())))
@@ -178,6 +209,14 @@ class OrbWindow(QQuickView):
         if self.status() == QQuickView.Status.Error:
             for err in self.errors():
                 log.error("Orb QML error: %s", err.toString())
+            log.error(
+                "Orb: QML failed to load — the orb will be invisible. "
+                "Install qt6-declarative and qt6-wayland."
+            )
+            return
+
+        if self.rootObject() is None:
+            log.error("Orb: QML loaded but produced no root object")
 
     def _subscribe_events(self) -> None:
         """Subscribe to event bus for state changes."""
@@ -239,6 +278,31 @@ class OrbWindow(QQuickView):
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_pos = event.globalPosition() - QPointF(self.x(), self.y())
+        elif event.button() == Qt.MouseButton.RightButton:
+            self._show_context_menu(event)
+
+    def _show_context_menu(self, event: QMouseEvent) -> None:
+        """Right-click menu — activate, settings, quit."""
+        from PySide6.QtWidgets import QMenu
+
+        menu = QMenu()
+        menu.addAction(
+            "Activate",
+            lambda: bus.emit_sync(Event.HOTKEY_TRIGGERED, source="orb_menu"),
+        )
+        menu.addSeparator()
+        menu.addAction("Settings…", self._open_settings)
+        menu.addSeparator()
+        menu.addAction(
+            "Quit", lambda: bus.emit_sync(Event.SHUTDOWN, source="orb_menu")
+        )
+        pos = event.globalPosition().toPoint()
+        menu.exec(pos)
+
+    def _open_settings(self) -> None:
+        from nixorb.ui.settings_window import SettingsWindow
+
+        SettingsWindow.show_singleton(self._settings)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self._drag_pos and (event.buttons() & Qt.MouseButton.LeftButton):
@@ -261,9 +325,8 @@ class OrbWindow(QQuickView):
     def wheelEvent(self, event: QWheelEvent) -> None:
         """Scroll wheel adjusts orb opacity."""
         delta = event.angleDelta().y() / 1200.0
-        new_opacity = self._bridge.opacity + delta
-        self._bridge.setOpacity(new_opacity)
-        self._settings.orb_opacity = self._bridge.opacity
+        self._bridge.setOpacity(self._bridge.current_opacity() + delta)
+        self._settings.orb_opacity = self._bridge.current_opacity()
         self._settings.save()
 
     def log_visibility(self) -> None:

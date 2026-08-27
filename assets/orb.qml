@@ -1,6 +1,4 @@
 import QtQuick 2.15
-import QtQuick.Shapes 1.15
-import NixOrb 1.0
 
 // NixOrb Floating Orb — GLSL shader-powered glowing sphere
 // States: idle (blue) → listening (green) → thinking (amber) → speaking (purple)
@@ -117,26 +115,15 @@ Item {
         visible: orbAmplitude > 0.05
     }
 
-    // Click handler
-    MouseArea {
-        anchors.fill: parent
-        onClicked: {
-            if (orbBridge) {
-                orbBridge.clicked()
-            }
-        }
-        onDoubleClicked: {
-            if (orbBridge) {
-                orbBridge.openSettings()
-            }
-        }
-    }
+    // Mouse handling lives in OrbWindow (see nixorb/ui/orb_window.py):
+    // drag to move, double-click to activate, right-click for the menu,
+    // scroll to change opacity. A MouseArea here would swallow all of it.
 
     // State indicator text (small, subtle)
     Text {
         anchors {
             bottom: parent.bottom
-            bottomMargin: -18
+            bottomMargin: 1
             horizontalCenter: parent.horizontalCenter
         }
         text: orbState.charAt(0).toUpperCase() + orbState.slice(1)

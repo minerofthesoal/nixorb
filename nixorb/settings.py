@@ -44,6 +44,8 @@ class Settings(BaseModel):
     )
     llm_max_tokens: int = 512
     llm_temperature: float = 0.7
+    # Seconds to wait for the user to answer a command-confirmation dialog.
+    action_confirm_timeout: float = 60.0
 
     # ── TTS ──────────────────────────────────────────────────────── #
     tts_backend: str = "piper"
@@ -52,15 +54,22 @@ class Settings(BaseModel):
     tts_volume: float = 1.0
 
     # ── Wake Word ────────────────────────────────────────────────── #
-    wake_word_enabled: bool = True
+    # openwakeword ships as the optional "wakeword" extra, so this stays
+    # off until the user installs it and opts in.
+    wake_word_enabled: bool = False
     wake_word_model: str = "hey_nixorb"
     wake_word_sensitivity: float = 0.5
 
     # ── Features ─────────────────────────────────────────────────── #
     screen_capture_enabled: bool = True
     web_search_enabled: bool = True
+    web_search_max_results: int = 4
     clipboard_enabled: bool = True
     require_action_confirmation: bool = True
+    # bubblewrap sandbox for <ACTION> commands. Off by default: the
+    # sandbox is read-only with no network, so an approved command that
+    # writes a file or installs a package fails for no visible reason.
+    sandbox_actions: bool = False
     memory_enabled: bool = True
     plugins_enabled: bool = True
 

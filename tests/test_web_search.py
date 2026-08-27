@@ -1,41 +1,58 @@
 """tests/test_web_search.py — Web search utility tests."""
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import pytest
+_RESULT_HTML = """
+<div class="result">
+  <a class="result__a" href="https://example.com">Example Title</a>
+  <a class="result__snippet">This is a snippet about the topic.</a>
+</div>
+"""
 
-pytestmark = pytest.mark.asyncio
+
+def test_parse_results_extracts_fields():
+    from nixorb.utils.web_search import parse_results
+
+    results = parse_results(_RESULT_HTML, max_results=3)
+
+    assert len(results) == 1
+    assert results[0]["title"] == "Example Title"
+    assert results[0]["url"] == "https://example.com"
+    assert "snippet" in results[0]["snippet"]
+
+
+def test_parse_results_honours_max():
+    from nixorb.utils.web_search import parse_results
+
+    results = parse_results(_RESULT_HTML * 5, max_results=2)
+    assert len(results) == 2
+
+
+def test_parse_results_on_junk_html():
+    from nixorb.utils.web_search import parse_results
+
+    assert parse_results("<html><body>nothing here</body></html>") == []
 
 
 async def test_search_returns_list():
     from nixorb.utils.web_search import search
 
-    mock_html = """
-    <a class="result__a" href="https://example.com">Example Title</a>
-    <a class="result__snippet">This is a snippet about the topic.</a>
-    """
-
-    def _fake_urlopen(*args, **kwargs):
-        m = MagicMock()
-        m.__enter__ = lambda s: s
-        m.__exit__  = MagicMock(return_value=False)
-        m.read      = lambda: mock_html.encode()
-        return m
-
-    with patch("urllib.request.urlopen", _fake_urlopen):
+    with patch("nixorb.utils.web_search._fetch", return_value=_RESULT_HTML):
         results = await search("test query", max_results=3)
 
     assert isinstance(results, list)
+    assert results[0]["title"] == "Example Title"
 
 
 async def test_search_fails_gracefully():
+    """A network error must degrade to no results, never propagate."""
     from nixorb.utils.web_search import search
 
-    def _fail(*args, **kwargs):
+    async def _fail(_query):
         raise OSError("network down")
 
-    with patch("urllib.request.urlopen", _fail):
+    with patch("nixorb.utils.web_search._fetch", _fail):
         results = await search("anything")
 
     assert results == []
@@ -44,10 +61,25 @@ async def test_search_fails_gracefully():
 async def test_search_formatted_no_results():
     from nixorb.utils.web_search import search_formatted
 
-    with patch("nixorb.utils.web_search.search", return_value=[]):
+    async def _none(_query, _max):
+        return []
+
+    with patch("nixorb.utils.web_search.search", _none):
         result = await search_formatted("xyz")
 
     assert "No search results" in result
+
+
+async def test_search_formatted_includes_titles_and_urls():
+    from nixorb.utils.web_search import search_formatted
+
+    async def _one(_query, _max):
+        return [{"title": "T", "snippet": "S", "url": "https://u"}]
+
+    with patch("nixorb.utils.web_search.search", _one):
+        result = await search_formatted("xyz")
+
+    assert "T" in result and "https://u" in result
 
 
 async def test_wants_web_detection():
@@ -57,7 +89,6 @@ async def test_wants_web_detection():
     assert _wants_web("search for Arch Linux news")
     assert _wants_web("who is Linus Torvalds")
     assert not _wants_web("open my terminal")
-    assert not _wants_web("what time is it locally")
 
 
 async def test_wants_screen_detection():

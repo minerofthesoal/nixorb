@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -32,25 +32,35 @@ class WakeWordDetector:
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        self._model = None
+        self._model: Any = None
         self._enabled = settings.wake_word_enabled
         self._model_name = settings.wake_word_model
         self._sensitivity = settings.wake_word_sensitivity
         self._last_activation = 0.0
         self._running = False
 
-    def _load_model(self):
+    def _load_model(self) -> Any:
         """Load the openwakeword model."""
         try:
             from openwakeword.model import Model
+        except ImportError:
+            # openwakeword is the optional "wakeword" extra, not a base
+            # dependency — a missing import is a config problem, not a crash.
+            log.warning(
+                "WakeWord: openwakeword is not installed — wake word disabled. "
+                "Install it with: pip install 'nixorb[wakeword]'"
+            )
+            return None
 
+        try:
             log.info("WakeWord: loading model '%s'", self._model_name)
             model = Model(wakeword_models=[self._model_name])
             log.info("WakeWord: model loaded")
             return model
         except Exception as exc:
-            log.error("WakeWord: failed to load model: %s", exc)
-            raise
+            log.error("WakeWord: failed to load model '%s': %s",
+                      self._model_name, exc)
+            return None
 
     def _unload_model(self, model) -> None:
         """Unload the wake word model."""
@@ -91,53 +101,66 @@ class WakeWordDetector:
         except Exception:
             return False
 
+    def _detect_loop(self) -> None:
+        """Blocking capture + detection loop. Runs in a worker thread.
+
+        This must not run on the event loop: sd.InputStream.read() blocks for
+        a full chunk (~80 ms) every iteration, which stalls Qt rendering, the
+        event bus and every other coroutine for as long as NixOrb is running.
+        """
+        import sounddevice as sd
+
+        with sd.InputStream(
+            samplerate=SAMPLE_RATE,
+            channels=1,
+            dtype=np.float32,
+            blocksize=CHUNK_SAMPLES,
+        ) as stream:
+            while self._running:
+                chunk, _ = stream.read(CHUNK_SAMPLES)
+                if not self._process_audio_chunk(chunk.flatten()):
+                    continue
+
+                now = time.monotonic()
+                if now - self._last_activation > COOLDOWN_SECONDS:
+                    self._last_activation = now
+                    log.info("WakeWord: '%s' detected!", self._model_name)
+                    # emit_sync marshals back onto the loop thread for us.
+                    bus.emit_sync(
+                        Event.WAKE_WORD_DETECTED,
+                        data={"model": self._model_name},
+                        source="WakeWordDetector",
+                    )
+
     async def run_forever(self) -> None:
-        """Main detection loop — runs until cancelled."""
+        """Main detection loop — runs until cancelled. Never raises."""
         if not self._enabled:
             log.info("WakeWord: disabled in settings")
             return
 
-        await self.preload()
+        try:
+            await self.preload()
+        except Exception as exc:
+            log.error("WakeWord: preload failed, wake word disabled: %s", exc)
+            return
+
+        if self._model is None:
+            # _load_model already explained why.
+            return
+
         self._running = True
-        log.info("WakeWord: detection loop started (listening for '%s')", self._model_name)
+        log.info(
+            "WakeWord: detection loop started (listening for '%s')",
+            self._model_name,
+        )
 
         try:
-            import sounddevice as sd
-
-            chunk_samples = CHUNK_SAMPLES
-
-            with sd.InputStream(
-                samplerate=SAMPLE_RATE,
-                channels=1,
-                dtype=np.float32,
-                blocksize=chunk_samples,
-            ) as stream:
-                while self._running:
-                    chunk, _ = stream.read(chunk_samples)
-                    chunk = chunk.flatten()
-
-                    loop = asyncio.get_running_loop()
-                    detected = await loop.run_in_executor(
-                        None, self._process_audio_chunk, chunk
-                    )
-
-                    if detected:
-                        now = time.monotonic()
-                        if now - self._last_activation > COOLDOWN_SECONDS:
-                            self._last_activation = now
-                            log.info("WakeWord: '%s' detected!", self._model_name)
-                            bus.emit_sync(
-                                Event.WAKE_WORD_DETECTED,
-                                data={"model": self._model_name},
-                                source="WakeWordDetector",
-                            )
-
-                    await asyncio.sleep(0.01)  # small yield
-
+            await asyncio.to_thread(self._detect_loop)
         except asyncio.CancelledError:
             log.info("WakeWord: detection loop cancelled")
+            raise
         except Exception as exc:
-            log.error("WakeWord: detection error: %s", exc)
+            log.error("WakeWord: detection error — wake word disabled: %s", exc)
         finally:
             self._running = False
 

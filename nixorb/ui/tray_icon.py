@@ -108,5 +108,7 @@ class NixOrbTray(QSystemTrayIcon):
     def _on_quit(self) -> None:
         """Quit NixOrb."""
         log.info("Tray: quit requested")
+        # SHUTDOWN lets main() unwind and release models, the HTTP session and
+        # the bus. Calling app.quit() here would kill the loop first and skip
+        # all of it.
         bus.emit_sync(Event.SHUTDOWN, source="tray_icon")
-        self._app.quit()

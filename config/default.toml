@@ -18,6 +18,9 @@ ollama_host = "http://localhost:11434"
 llm_max_tokens = 512
 llm_temperature = 0.7
 
+# Seconds to wait for you to answer the command-confirmation dialog.
+action_confirm_timeout = 60.0
+
 # ── TTS ────────────────────────────────────────────────────────── #
 tts_backend = "piper"
 tts_voice = "en_US-lessac-medium"
@@ -25,14 +28,23 @@ tts_speed = 1.0
 tts_volume = 1.0
 
 # ── Wake Word ──────────────────────────────────────────────────── #
-wake_word_enabled = true
+# Requires the optional extra:  pip install 'nixorb[wakeword]'
+wake_word_enabled = false
 wake_word_model = "hey_nixorb"
 wake_word_sensitivity = 0.5
 
 # ── Features ───────────────────────────────────────────────────── #
 screen_capture_enabled = true
 web_search_enabled = true
+web_search_max_results = 4
 clipboard_enabled = true
+
+# Ask before running every <ACTION> command the model emits. Turning this
+# off lets the model run shell commands on your machine unattended.
 require_action_confirmation = true
+
+# Wrap approved commands in a bubblewrap sandbox (read-only filesystem, no
+# network). Off by default because it makes most useful commands fail.
+sandbox_actions = false
 memory_enabled = true
 plugins_enabled = true
