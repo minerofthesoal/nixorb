@@ -46,6 +46,21 @@ dev = [
     "mypy>=1.10",
 ]
 wakeword = ["openwakeword>=0.6.0"]
+# Local HuggingFace LLM/ASR/TTS models (transformers) — needed for
+# llm_backend="huggingface", asr_backend="huggingface", tts_backend="huggingface".
+# Pick a torch build matching your GPU; see requirements-cuda.txt for the
+# GTX 1080 (CUDA 11.8) pin this project targets.
+huggingface = [
+    "transformers>=4.44.0",
+    "accelerate>=0.33.0",
+    "huggingface_hub>=0.24.0",
+]
+# GGUF models via llama.cpp — needed for llm_backend="huggingface" when
+# llm_model/llm_gguf_file points at a GGUF checkpoint.
+llama_cpp = ["llama-cpp-python>=0.2.90"]
+# Any OpenAI-compatible endpoint (real OpenAI, or a local vLLM / TGI /
+# LM Studio / llama.cpp server) — llm_backend="openai" or tts_backend="openai".
+openai = ["openai>=1.40.0"]
 
 [project.scripts]
 nixorb = "nixorb.cli:app"

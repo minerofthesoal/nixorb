@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from nixorb.core.event_bus import Event, bus
+from nixorb.utils.audio import describe_devices, resolve_input_device
 
 if TYPE_CHECKING:
     from nixorb.settings import Settings
@@ -24,10 +25,35 @@ SAMPLE_RATE = 16000
 CHANNELS = 1
 DTYPE = np.float32
 CHUNK_DURATION = 0.5  # seconds per audio chunk
+# Base VAD threshold at the default mic_sensitivity (0.5) — kept as a plain
+# module constant because it doubles as the documented "this is roughly how
+# loud speech needs to be" baseline, and tests pin it directly.
 SILENCE_THRESHOLD = 0.015
+# Sensitivity 0.0 maps to this (needs a loud/close voice), 1.0 maps to
+# MIN_SILENCE_THRESHOLD (picks up quiet/distant speech, more false triggers).
+MAX_SILENCE_THRESHOLD = 0.045
+MIN_SILENCE_THRESHOLD = 0.004
 SILENCE_TIMEOUT = 2.0  # seconds of silence before stopping
 MAX_RECORDING_DURATION = 30.0  # maximum recording length
 VAD_WINDOW_MS = 30  # voice activity detection window
+# How long to sample ambient noise before recording actually starts, to
+# adapt the threshold to a genuinely noisy room or a hot mic gain. Set to 0
+# to disable and use the sensitivity-derived threshold as-is.
+CALIBRATION_SECONDS = 0.3
+
+
+def _sensitivity_to_threshold(sensitivity: object) -> float:
+    """Map a 0..1 mic_sensitivity setting onto a VAD RMS threshold.
+
+    Defensive about ``sensitivity`` not being a plain float (e.g. an
+    unconfigured test mock) — falls back to the original fixed threshold
+    rather than raising out of a constructor.
+    """
+    try:
+        s = max(0.0, min(1.0, float(sensitivity)))
+    except (TypeError, ValueError):
+        return SILENCE_THRESHOLD
+    return MAX_SILENCE_THRESHOLD + s * (MIN_SILENCE_THRESHOLD - MAX_SILENCE_THRESHOLD)
 
 
 class WhisperEngine:
@@ -39,8 +65,13 @@ class WhisperEngine:
         self._model_name = settings.asr_model
         self._language = settings.asr_language or "en"
         self._mic_index = settings.microphone_index
+        self._mic_name = getattr(settings, "microphone_name", "") or ""
+        self._base_threshold = _sensitivity_to_threshold(
+            getattr(settings, "mic_sensitivity", 0.5)
+        )
         self._recording = False
         self._audio_buffer: list[np.ndarray] = []
+        self._devices_logged = False
 
     @property
     def is_loaded(self) -> bool:
@@ -117,9 +148,18 @@ class WhisperEngine:
 
     def _record_audio_sync(self) -> np.ndarray | None:
         """Synchronous audio recording with VAD (runs in thread)."""
-        log.info("ASR: starting recording…")
         self._recording = True
         self._audio_buffer = []
+
+        resolved = resolve_input_device(self._mic_index, self._mic_name)
+        if not self._devices_logged:
+            log.info("ASR: available input devices:\n%s", describe_devices())
+            self._devices_logged = True
+        log.info(
+            "ASR: starting recording… (device[%s]='%s', reason: %s, "
+            "vad_threshold=%.4f)",
+            resolved.index, resolved.name, resolved.reason, self._base_threshold,
+        )
 
         chunk_samples = int(SAMPLE_RATE * CHUNK_DURATION)
         silence_samples = int(SAMPLE_RATE * SILENCE_TIMEOUT)
@@ -128,6 +168,8 @@ class WhisperEngine:
         silence_counter = 0
         total_samples = 0
         has_speech = False
+        peak_rms = 0.0
+        threshold = self._base_threshold
 
         try:
             import sounddevice as sd
@@ -136,25 +178,50 @@ class WhisperEngine:
                 samplerate=SAMPLE_RATE,
                 channels=CHANNELS,
                 dtype=DTYPE,
-                device=self._mic_index,
+                device=resolved.index,
                 blocksize=chunk_samples,
             ) as stream:
+                calib_samples_needed = int(SAMPLE_RATE * CALIBRATION_SECONDS)
+                calib_samples_seen = 0
+                calib_rms_values: list[float] = []
+
                 while self._recording and total_samples < max_samples:
                     chunk, _ = stream.read(chunk_samples)
                     chunk = chunk.flatten()
                     self._audio_buffer.append(chunk)
                     total_samples += len(chunk)
 
+                    rms = float(np.sqrt(np.mean(chunk**2)))
+                    peak_rms = max(peak_rms, rms)
+
+                    # Briefly sample the room's noise floor before applying
+                    # VAD, so a noisy fan or a hot mic gain doesn't either
+                    # trigger immediately or need a threshold so high it
+                    # misses quiet speech.
+                    if calib_samples_seen < calib_samples_needed:
+                        calib_rms_values.append(rms)
+                        calib_samples_seen += len(chunk)
+                        if calib_samples_seen >= calib_samples_needed:
+                            noise_floor = float(np.mean(calib_rms_values))
+                            adaptive = noise_floor * 2.5
+                            if adaptive > threshold:
+                                log.info(
+                                    "ASR: ambient noise floor (%.4f) raises "
+                                    "VAD threshold %.4f → %.4f",
+                                    noise_floor, threshold, adaptive,
+                                )
+                                threshold = min(adaptive, MAX_SILENCE_THRESHOLD * 2)
+                        continue
+
                     # Voice activity detection
-                    rms = np.sqrt(np.mean(chunk**2))
-                    if rms > SILENCE_THRESHOLD:
+                    if rms > threshold:
                         has_speech = True
                         silence_counter = 0
                     elif has_speech:
                         silence_counter += len(chunk)
 
                     # Emit mic level for UI visualization
-                    level = min(1.0, rms / SILENCE_THRESHOLD)
+                    level = min(1.0, rms / threshold)
                     bus.emit_sync(
                         Event.MIC_LEVEL,
                         data={"level": float(level)},
@@ -167,7 +234,16 @@ class WhisperEngine:
                         break
 
             if not has_speech:
-                log.info("ASR: no speech detected")
+                log.info(
+                    "ASR: no speech detected (peak input level %.4f, "
+                    "threshold %.4f, device '%s')%s",
+                    peak_rms, threshold, resolved.name,
+                    " — input was essentially silent; check that this is "
+                    "really your microphone and that it isn't muted"
+                    if peak_rms < threshold * 0.1 else
+                    " — sound was picked up but stayed under the threshold; "
+                    "try raising mic_sensitivity in settings",
+                )
                 return None
 
             audio = np.concatenate(self._audio_buffer)
@@ -175,7 +251,10 @@ class WhisperEngine:
             return audio
 
         except Exception as exc:
-            log.error("ASR: recording failed: %s", exc)
+            log.error(
+                "ASR: recording failed on device[%s]='%s': %s",
+                resolved.index, resolved.name, exc,
+            )
             return None
         finally:
             self._recording = False

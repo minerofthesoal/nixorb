@@ -7,14 +7,41 @@ orb_size = 88
 orb_opacity = 1.0
 
 # ── ASR ────────────────────────────────────────────────────────── #
+# "faster_whisper" (default, CTranslate2 Whisper) or "huggingface" (any
+# transformers ASR model/pipeline — distil-whisper, Parakeet, a fine-tune...)
+asr_backend = "faster_whisper"
+# A faster-whisper size/repo when asr_backend="faster_whisper" (e.g.
+# "large-v3"), or any HF repo id when asr_backend="huggingface" (e.g.
+# "openai/whisper-large-v3-turbo", "distil-whisper/distil-large-v3").
 asr_model = "large-v3"
 asr_language = "en"
+# Needed for gated/private HF repos.
+hf_token = ""
+# Chunk-and-transcribe partial results while you're still talking, instead
+# of waiting for silence. Only affects asr_backend="huggingface".
+asr_streaming = false
+asr_streaming_chunk_seconds = 2.5
+# 0.0 (least sensitive) .. 1.0 (most sensitive to quiet/distant speech).
 mic_sensitivity = 0.5
+# Preferred input device by name substring, e.g. "USB" — survives reboots
+# better than an index, which PipeWire/ALSA can renumber.
+microphone_name = ""
 
-# ── LLM (Local Ollama) ─────────────────────────────────────────── #
+# ── LLM ────────────────────────────────────────────────────────── #
+# "ollama" (default, local, no API keys), "huggingface" (any local
+# transformers or GGUF model), or "openai" (any OpenAI-compatible endpoint —
+# real OpenAI, or a local vLLM / TGI / LM Studio / llama.cpp server).
 llm_backend = "ollama"
+# An Ollama tag when llm_backend="ollama", or any HF repo id / local path
+# when llm_backend="huggingface", or the served model name when
+# llm_backend="openai".
 llm_model = "llama3.2"
 ollama_host = "http://localhost:11434"
+# Only used for llm_backend="huggingface" with a multi-file GGUF repo, e.g.
+# "model.Q4_K_M.gguf". Leave blank for safetensors, or to auto-pick a GGUF.
+llm_gguf_file = ""
+openai_api_key = ""
+openai_base_url = "https://api.openai.com/v1"
 llm_max_tokens = 512
 llm_temperature = 0.7
 
@@ -22,14 +49,21 @@ llm_temperature = 0.7
 action_confirm_timeout = 60.0
 
 # ── TTS ────────────────────────────────────────────────────────── #
+# "piper" (default, offline), "glados", "huggingface" (any HF
+# text-to-speech pipeline — SpeechT5, Bark, Kokoro...), or "openai".
 tts_backend = "piper"
 tts_voice = "en_US-lessac-medium"
 tts_speed = 1.0
 tts_volume = 1.0
+# Required when tts_backend="huggingface", e.g. "microsoft/speecht5_tts".
+tts_hf_repo = ""
 
 # ── Wake Word ──────────────────────────────────────────────────── #
 # Requires the optional extra:  pip install 'nixorb[wakeword]'
 wake_word_enabled = false
+# A bundled pretrained name (alexa, hey_jarvis, hey_mycroft, timer, weather)
+# or a path to a custom-trained .onnx/.tflite model. "hey_nixorb" isn't a
+# real model yet — it falls back to hey_jarvis until you train one.
 wake_word_model = "hey_nixorb"
 wake_word_sensitivity = 0.5
 

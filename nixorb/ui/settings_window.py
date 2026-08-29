@@ -110,13 +110,40 @@ class SettingsWindow(QDialog):
         widget = QWidget()
         layout = QFormLayout()
 
+        # Backend
+        self._asr_backend_combo = QComboBox()
+        self._asr_backend_combo.addItems(["faster_whisper", "huggingface"])
+        layout.addRow("ASR Backend:", self._asr_backend_combo)
+
         # Model
         self._asr_model_edit = QLineEdit()
-        layout.addRow("Whisper Model:", self._asr_model_edit)
+        self._asr_model_edit.setPlaceholderText(
+            "large-v3, or any HF repo id when backend=huggingface"
+        )
+        layout.addRow("Model:", self._asr_model_edit)
 
         # Language
         self._asr_lang_edit = QLineEdit()
         layout.addRow("Language (empty=auto):", self._asr_lang_edit)
+
+        # Streaming (huggingface backend only)
+        self._asr_streaming_check = QCheckBox(
+            "Stream partial transcripts while speaking (HuggingFace backend only)"
+        )
+        layout.addRow(self._asr_streaming_check)
+
+        # HuggingFace token
+        self._hf_token_edit = QLineEdit()
+        self._hf_token_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._hf_token_edit.setPlaceholderText("Only needed for gated/private HF repos")
+        layout.addRow("HuggingFace Token:", self._hf_token_edit)
+
+        # Microphone name filter
+        self._mic_name_edit = QLineEdit()
+        self._mic_name_edit.setPlaceholderText(
+            "Substring match, e.g. \"USB\" — leave blank to auto-detect"
+        )
+        layout.addRow("Preferred Microphone:", self._mic_name_edit)
 
         # Mic sensitivity
         sens_layout = QHBoxLayout()
@@ -138,13 +165,36 @@ class SettingsWindow(QDialog):
         widget = QWidget()
         layout = QFormLayout()
 
+        # Backend
+        self._llm_backend_combo = QComboBox()
+        self._llm_backend_combo.addItems(["ollama", "huggingface", "openai"])
+        layout.addRow("LLM Backend:", self._llm_backend_combo)
+
         # Ollama host
         self._ollama_host_edit = QLineEdit()
         layout.addRow("Ollama Host:", self._ollama_host_edit)
 
         # Model
         self._llm_model_edit = QLineEdit()
+        self._llm_model_edit.setPlaceholderText(
+            "Ollama tag, HF repo id/path, or served model name"
+        )
         layout.addRow("Model Name:", self._llm_model_edit)
+
+        # GGUF file (HuggingFace backend, multi-file GGUF repos)
+        self._llm_gguf_file_edit = QLineEdit()
+        self._llm_gguf_file_edit.setPlaceholderText(
+            "e.g. model.Q4_K_M.gguf — blank for safetensors or auto-pick"
+        )
+        layout.addRow("GGUF File:", self._llm_gguf_file_edit)
+
+        # OpenAI-compatible endpoint
+        self._openai_base_url_edit = QLineEdit()
+        layout.addRow("OpenAI-compatible URL:", self._openai_base_url_edit)
+
+        self._openai_api_key_edit = QLineEdit()
+        self._openai_api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        layout.addRow("OpenAI-compatible API Key:", self._openai_api_key_edit)
 
         # Max tokens
         self._max_tokens_spin = QSpinBox()
@@ -172,8 +222,15 @@ class SettingsWindow(QDialog):
 
         # Backend
         self._tts_backend_combo = QComboBox()
-        self._tts_backend_combo.addItems(["piper", "espeak-ng"])
+        self._tts_backend_combo.addItems(["piper", "glados", "huggingface", "openai"])
         layout.addRow("TTS Backend:", self._tts_backend_combo)
+
+        # HuggingFace repo (huggingface backend only)
+        self._tts_hf_repo_edit = QLineEdit()
+        self._tts_hf_repo_edit.setPlaceholderText(
+            "Required for backend=huggingface, e.g. microsoft/speecht5_tts"
+        )
+        layout.addRow("HuggingFace TTS Repo:", self._tts_hf_repo_edit)
 
         # Voice
         self._tts_voice_edit = QLineEdit()
@@ -245,13 +302,25 @@ class SettingsWindow(QDialog):
         self._opacity_slider.setValue(int(s.orb_opacity * 100))
 
         # ASR
+        idx = self._asr_backend_combo.findText(getattr(s, "asr_backend", "faster_whisper"))
+        if idx >= 0:
+            self._asr_backend_combo.setCurrentIndex(idx)
         self._asr_model_edit.setText(s.asr_model)
         self._asr_lang_edit.setText(s.asr_language)
+        self._asr_streaming_check.setChecked(getattr(s, "asr_streaming", False))
+        self._hf_token_edit.setText(getattr(s, "hf_token", ""))
+        self._mic_name_edit.setText(getattr(s, "microphone_name", ""))
         self._mic_sens_slider.setValue(int(s.mic_sensitivity * 100))
 
         # LLM
+        idx = self._llm_backend_combo.findText(s.llm_backend)
+        if idx >= 0:
+            self._llm_backend_combo.setCurrentIndex(idx)
         self._ollama_host_edit.setText(s.ollama_host)
         self._llm_model_edit.setText(s.llm_model)
+        self._llm_gguf_file_edit.setText(getattr(s, "llm_gguf_file", ""))
+        self._openai_base_url_edit.setText(getattr(s, "openai_base_url", ""))
+        self._openai_api_key_edit.setText(getattr(s, "openai_api_key", ""))
         self._max_tokens_spin.setValue(s.llm_max_tokens)
         self._temp_spin.setValue(s.llm_temperature)
         self._system_prompt_edit.setPlainText(s.llm_system_prompt)
@@ -260,6 +329,7 @@ class SettingsWindow(QDialog):
         idx = self._tts_backend_combo.findText(s.tts_backend)
         if idx >= 0:
             self._tts_backend_combo.setCurrentIndex(idx)
+        self._tts_hf_repo_edit.setText(getattr(s, "tts_hf_repo", ""))
         self._tts_voice_edit.setText(s.tts_voice)
         self._tts_speed_spin.setValue(s.tts_speed)
         self._tts_vol_slider.setValue(int(s.tts_volume * 100))
@@ -283,19 +353,28 @@ class SettingsWindow(QDialog):
         s.orb_opacity = self._opacity_slider.value() / 100.0
 
         # ASR
+        s.asr_backend = self._asr_backend_combo.currentText()
         s.asr_model = self._asr_model_edit.text()
         s.asr_language = self._asr_lang_edit.text()
+        s.asr_streaming = self._asr_streaming_check.isChecked()
+        s.hf_token = self._hf_token_edit.text()
+        s.microphone_name = self._mic_name_edit.text()
         s.mic_sensitivity = self._mic_sens_slider.value() / 100.0
 
         # LLM
+        s.llm_backend = self._llm_backend_combo.currentText()
         s.ollama_host = self._ollama_host_edit.text()
         s.llm_model = self._llm_model_edit.text()
+        s.llm_gguf_file = self._llm_gguf_file_edit.text()
+        s.openai_base_url = self._openai_base_url_edit.text()
+        s.openai_api_key = self._openai_api_key_edit.text()
         s.llm_max_tokens = self._max_tokens_spin.value()
         s.llm_temperature = self._temp_spin.value()
         s.llm_system_prompt = self._system_prompt_edit.toPlainText()
 
         # TTS
         s.tts_backend = self._tts_backend_combo.currentText()
+        s.tts_hf_repo = self._tts_hf_repo_edit.text()
         s.tts_voice = self._tts_voice_edit.text()
         s.tts_speed = self._tts_speed_spin.value()
         s.tts_volume = self._tts_vol_slider.value() / 100.0

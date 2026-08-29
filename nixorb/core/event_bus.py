@@ -40,6 +40,7 @@ class Event(Enum):
     MIC_LEVEL = auto()
     MIC_MUTED = auto()
     TRANSCRIPT_READY = auto()
+    ASR_PARTIAL_TRANSCRIPT = auto()
     ASR_READY = auto()
     ASR_ERROR = auto()
 

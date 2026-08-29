@@ -27,15 +27,50 @@ class Settings(BaseModel):
     hotkey: str = "Ctrl+Alt+Space"
 
     # ── ASR ──────────────────────────────────────────────────────── #
+    # "faster_whisper" — CTranslate2 Whisper models (fast, GTX 1080-friendly).
+    # "huggingface"    — any transformers ASR model/pipeline (Whisper variants,
+    #                     distil-whisper, wav2vec2, Parakeet, Moonshine, ...).
+    asr_backend: str = "faster_whisper"
+    # Model identifier, interpreted per-backend: a faster-whisper size/repo
+    # (e.g. "large-v3") when asr_backend="faster_whisper", or any HF repo id
+    # (e.g. "openai/whisper-large-v3-turbo", "nvidia/parakeet-tdt-0.6b-v2")
+    # when asr_backend="huggingface".
     asr_model: str = "large-v3"
     asr_language: str = "en"
+    hf_token: str = ""
+    # Chunk-and-transcribe partial results while the user is still talking,
+    # instead of waiting for silence. Emits Event.ASR_PARTIAL_TRANSCRIPT.
+    asr_streaming: bool = False
+    asr_streaming_chunk_seconds: float = 2.5
     microphone_index: int | None = None
+    # Preferred input device by name substring (case-insensitive), e.g. "USB".
+    # Survives reboots/replugs better than an index, which PipeWire/ALSA can
+    # renumber. Tried before microphone_index if both are set.
+    microphone_name: str = ""
+    # 0.0 (least sensitive, needs a loud/close voice) .. 1.0 (most sensitive,
+    # picks up quiet/distant speech but also more room noise). 0.5 reproduces
+    # the original fixed threshold.
     mic_sensitivity: float = 0.5
 
-    # ── LLM (Local-only: Ollama) ─────────────────────────────────── #
+    # ── LLM ──────────────────────────────────────────────────────── #
+    # "ollama"      — local Ollama server (default, no API keys)
+    # "huggingface" — any local HF model: safetensors via transformers, or a
+    #                 GGUF file/repo via llama-cpp-python (auto-detected)
+    # "openai"      — any OpenAI-compatible HTTP API (OpenAI, vLLM, LM Studio,
+    #                 llama.cpp server, TGI, ...)
     llm_backend: str = "ollama"
+    # Model identifier, interpreted per-backend: an Ollama tag when
+    # llm_backend="ollama", or any HF repo id / local path when
+    # llm_backend="huggingface", or a model name for the OpenAI-compatible
+    # endpoint when llm_backend="openai".
     llm_model: str = "llama3.2"
     ollama_host: str = "http://localhost:11434"
+    # Specific GGUF filename to pick out of a multi-file HF repo, e.g.
+    # "model.Q4_K_M.gguf". Leave blank to auto-pick the first .gguf, or to
+    # load full-precision/safetensors weights via transformers instead.
+    llm_gguf_file: str = ""
+    openai_api_key: str = ""
+    openai_base_url: str = "https://api.openai.com/v1"
     llm_system_prompt: str = (
         "You are NixOrb, a helpful AI assistant running on Arch Linux with KDE Plasma 6. "
         "You have a witty, slightly sardonic personality like GLaDOS. "
@@ -48,15 +83,24 @@ class Settings(BaseModel):
     action_confirm_timeout: float = 60.0
 
     # ── TTS ──────────────────────────────────────────────────────── #
+    # "piper" | "glados" | "huggingface" | "openai"
     tts_backend: str = "piper"
     tts_voice: str = "en_US-lessac-medium"
     tts_speed: float = 1.0
     tts_volume: float = 1.0
+    # HF repo id for tts_backend="huggingface" (e.g. "microsoft/speecht5_tts",
+    # "suno/bark-small", "hexgrad/Kokoro-82M", any text-to-speech pipeline).
+    tts_hf_repo: str = ""
 
     # ── Wake Word ────────────────────────────────────────────────── #
     # openwakeword ships as the optional "wakeword" extra, so this stays
     # off until the user installs it and opts in.
     wake_word_enabled: bool = False
+    # A bundled openwakeword pretrained name ("alexa", "hey_jarvis",
+    # "hey_mycroft", "timer", "weather"), or an absolute path to a custom
+    # .onnx/.tflite model you trained yourself. "hey_nixorb" is not a real
+    # model — nobody has trained one — so this falls back to "hey_jarvis"
+    # at runtime with a warning until you point it at a real one.
     wake_word_model: str = "hey_nixorb"
     wake_word_sensitivity: float = 0.5
 

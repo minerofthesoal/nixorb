@@ -146,30 +146,39 @@ async def _async_main(settings, app) -> None:
         # has even painted, which is indistinguishable from a hang.
         memory = await asyncio.to_thread(VectorMemory, settings.memory_dir)
 
-        # ASR (Whisper)
-        from nixorb.asr.whisper_engine import WhisperEngine
-        asr = WhisperEngine(settings)
+        # ASR — faster-whisper or any HuggingFace ASR model, per settings.
+        from nixorb.asr.factory import build_asr
+        asr = build_asr(settings)
 
-        # LLM (Ollama — local only)
-        from nixorb.llm.ollama_backend import OllamaBackend
-        llm = OllamaBackend(settings)
+        # LLM — Ollama, a local HuggingFace model, or any OpenAI-compatible
+        # endpoint, per settings.llm_backend. This used to always be
+        # OllamaBackend regardless of what was configured here, which is
+        # why changing llm_backend appeared to do nothing.
+        from nixorb.llm.factory import build_llm
+        llm = build_llm(settings)
 
-        # Check Ollama health
+        # Health check — backend-agnostic; each backend explains how to fix
+        # itself (pull an Ollama tag, install a missing package, check a
+        # HF repo id, reach an OpenAI-compatible server) rather than every
+        # backend being told to "ollama pull" a HuggingFace repo id.
         health = await llm.health_check()
         if health["ok"]:
-            log.info("LLM: Ollama ready with model '%s'", settings.llm_model)
+            log.info(
+                "LLM: %s ready with model '%s'", settings.llm_backend, settings.llm_model
+            )
         else:
             log.warning("LLM: %s", health.get("error", "Unknown error"))
-            log.info("LLM: Run 'ollama pull %s' to download the model", settings.llm_model)
             await bus.emit(
                 Event.LOG,
                 data={"level": "warning", "msg": f"⚠ LLM: {health.get('error', '')}"},
                 source="startup",
             )
 
-        # TTS (Piper)
-        from nixorb.tts.piper_tts import PiperTTS
-        tts = PiperTTS(settings)
+        # TTS — Piper, GLaDOS, any HuggingFace TTS model, or OpenAI TTS, per
+        # settings.tts_backend. Previously always PiperTTS regardless of
+        # what was configured.
+        from nixorb.tts.tts_factory import build_tts
+        tts = build_tts(settings)
 
         # Confirmation dialog handler — must be registered *before* the executor
         # can emit its first ACTION_REQUESTED, or the request goes unanswered.
