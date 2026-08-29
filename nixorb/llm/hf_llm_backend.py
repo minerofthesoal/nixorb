@@ -324,10 +324,7 @@ class HuggingFaceLLMBackend:
         loop = asyncio.get_running_loop()
         self.last_tool_calls = []
 
-        try:
-            await loop.run_in_executor(None, self._ensure_loaded)
-        except HuggingFaceLLMError as exc:
-            raise
+        await loop.run_in_executor(None, self._ensure_loaded)
 
         await bus.emit(
             Event.LLM_START, data={"model": self._model_id},
