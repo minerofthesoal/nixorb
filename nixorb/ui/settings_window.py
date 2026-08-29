@@ -379,6 +379,15 @@ class SettingsWindow(QDialog):
         s.tts_speed = self._tts_speed_spin.value()
         s.tts_volume = self._tts_vol_slider.value() / 100.0
 
+        if s.tts_backend == "huggingface" and not s.tts_hf_repo.strip():
+            QMessageBox.warning(
+                self, "NixOrb",
+                "HuggingFace TTS Repo is required when TTS Backend is set "
+                "to 'huggingface' (e.g. \"microsoft/speecht5_tts\"). Set a "
+                "repo id or choose a different TTS backend.",
+            )
+            return
+
         # Features
         s.wake_word_enabled = self._wake_word_check.isChecked()
         s.wake_word_model = self._wake_word_edit.text()
