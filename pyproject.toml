@@ -109,6 +109,16 @@ Issues = "https://github.com/minerofthesoal/nixorb/issues"
 [tool.hatch.version]
 path = "nixorb/__init__.py"
 
+[tool.hatch.metadata]
+# Required because the "wakeword" extra points at a git+https URL (see the
+# comment above that extra in [project.optional-dependencies] for why).
+# Without this, hatchling refuses to build at all — it inherits PyPI's rule
+# that published package metadata can't contain direct references, since
+# an index-only resolver can't follow them. This project isn't published to
+# PyPI, so the restriction doesn't actually apply, but hatchling enforces it
+# unconditionally unless this is set.
+allow-direct-references = true
+
 [tool.hatch.build.targets.wheel]
 packages = ["nixorb"]
 
