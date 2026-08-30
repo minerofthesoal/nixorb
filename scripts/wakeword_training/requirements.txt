@@ -1,0 +1,24 @@
+# Run this in its own venv, separate from nixorb's own install — this is a
+# one-off training environment, not a runtime dependency of NixOrb itself.
+#
+#   python3.12 -m venv .venv-train
+#   source .venv-train/bin/activate
+#   pip install torch==2.7.1+cu118 torchaudio==2.7.1+cu118 \
+#       --index-url https://download.pytorch.org/whl/cu118
+#   pip install -r requirements.txt
+#
+# openWakeWord itself is only needed here for its feature-extraction
+# utilities (openwakeword.utils.AudioFeatures) — training doesn't need the
+# tflite/ai-edge-litert side of it at all, so the PyPI release is fine here
+# even though nixorb's own runtime install points at GitHub main (see the
+# `wakeword` extra comment in nixorb's own pyproject.toml for why).
+openwakeword>=0.6.0
+onnxruntime>=1.10.0
+
+qwen-tts
+transformers>=4.44.0
+accelerate>=0.33.0
+soundfile>=0.12.1
+
+tqdm
+requests

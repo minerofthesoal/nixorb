@@ -34,6 +34,22 @@ dependencies = [
     "chromadb>=0.5.3",
     "pynput>=1.7.6",
     "cryptography>=42.0",
+    # Local HuggingFace LLM/ASR/TTS models — needed for the default config,
+    # which uses llm_backend="huggingface", asr_backend="huggingface", and
+    # tts_backend="huggingface". Pulled via [tool.uv.sources] below on the
+    # cu118 index — pinned for the GTX 1080 (CUDA 11.8) this project targets.
+    # On a different GPU, override torch/torchaudio to a matching build.
+    "torch==2.7.1+cu118",
+    "torchaudio==2.7.1+cu118",
+    "transformers>=4.44.0",
+    "accelerate>=0.33.0",
+    "huggingface_hub>=0.24.0",
+    # GGUF models via llama.cpp — needed for llm_backend="huggingface" when
+    # llm_model/llm_gguf_file points at a GGUF checkpoint (the default does).
+    # Pulled via [tool.uv.sources] below on the prebuilt-CPU-wheel index —
+    # this model is tiny (~1.3 GB Q4_K_M), CPU inference is plenty fast, and
+    # skipping the source build saves several minutes on every fresh install.
+    "llama-cpp-python>=0.2.90",
 ]
 
 [project.optional-dependencies]
@@ -45,22 +61,39 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.10",
 ]
-wakeword = ["openwakeword>=0.6.0"]
-# Local HuggingFace LLM/ASR/TTS models (transformers) — needed for
-# llm_backend="huggingface", asr_backend="huggingface", tts_backend="huggingface".
-# Pick a torch build matching your GPU; see requirements-cuda.txt for the
-# GTX 1080 (CUDA 11.8) pin this project targets.
-huggingface = [
-    "transformers>=4.44.0",
-    "accelerate>=0.33.0",
-    "huggingface_hub>=0.24.0",
-]
-# GGUF models via llama.cpp — needed for llm_backend="huggingface" when
-# llm_model/llm_gguf_file points at a GGUF checkpoint.
-llama_cpp = ["llama-cpp-python>=0.2.90"]
+# NOT installed by default (a separate model-training step is required
+# before it's useful anyway — see scripts/wakeword_training/). Also: this
+# pins to GitHub main, not PyPI. PyPI's published openwakeword==0.6.0 still
+# lists tflite-runtime>=2.8.0 as a hard Linux dependency, and tflite-runtime
+# never published a wheel past cp311 — unsatisfiable on this project's
+# requires-python (>=3.12), on any 3.12+ interpreter. That's fixed upstream:
+# openWakeWord's GitHub main branch already migrated to ai-edge-litert
+# (Google's actively-maintained LiteRT), which does publish real cp312/
+# cp313/cp314 wheels — that fix just hasn't made it into a new PyPI release
+# yet. Once it does, this can go back to a plain version pin.
+wakeword = ["openwakeword @ git+https://github.com/dscripka/openWakeWord.git"]
 # Any OpenAI-compatible endpoint (real OpenAI, or a local vLLM / TGI /
 # LM Studio / llama.cpp server) — llm_backend="openai" or tts_backend="openai".
 openai = ["openai>=1.40.0"]
+
+# Declarative index pins so a plain `pip install .` / `uv tool install .` /
+# `uv sync` resolves the right prebuilt wheels with zero manual --index-url
+# flags. uv reads this section; plain pip does not — install.sh/install.fish
+# pass the same index URLs explicitly on their pip install lines instead.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu118" }]
+torchaudio = [{ index = "pytorch-cu118" }]
+llama-cpp-python = [{ index = "llama-cpu" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu118"
+url = "https://download.pytorch.org/whl/cu118"
+explicit = true
+
+[[tool.uv.index]]
+name = "llama-cpu"
+url = "https://abetlen.github.io/llama-cpp-python/whl/cpu"
+explicit = true
 
 [project.scripts]
 nixorb = "nixorb.cli:app"

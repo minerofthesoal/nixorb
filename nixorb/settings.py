@@ -30,12 +30,12 @@ class Settings(BaseModel):
     # "faster_whisper" — CTranslate2 Whisper models (fast, GTX 1080-friendly).
     # "huggingface"    — any transformers ASR model/pipeline (Whisper variants,
     #                     distil-whisper, wav2vec2, Parakeet, Moonshine, ...).
-    asr_backend: str = "faster_whisper"
+    asr_backend: str = "huggingface"
     # Model identifier, interpreted per-backend: a faster-whisper size/repo
     # (e.g. "large-v3") when asr_backend="faster_whisper", or any HF repo id
     # (e.g. "openai/whisper-large-v3-turbo", "nvidia/parakeet-tdt-0.6b-v2")
     # when asr_backend="huggingface".
-    asr_model: str = "large-v3"
+    asr_model: str = "nvidia/nemotron-3.5-asr-streaming-0.6b"
     asr_language: str = "en"
     hf_token: str = ""
     # Chunk-and-transcribe partial results while the user is still talking,
@@ -58,22 +58,26 @@ class Settings(BaseModel):
     #                 GGUF file/repo via llama-cpp-python (auto-detected)
     # "openai"      — any OpenAI-compatible HTTP API (OpenAI, vLLM, LM Studio,
     #                 llama.cpp server, TGI, ...)
-    llm_backend: str = "ollama"
+    llm_backend: str = "huggingface"
     # Model identifier, interpreted per-backend: an Ollama tag when
     # llm_backend="ollama", or any HF repo id / local path when
     # llm_backend="huggingface", or a model name for the OpenAI-compatible
     # endpoint when llm_backend="openai".
-    llm_model: str = "llama3.2"
+    llm_model: str = "empero-ai/Qwen3.8-2B-Distill-GGUF"
     ollama_host: str = "http://localhost:11434"
     # Specific GGUF filename to pick out of a multi-file HF repo, e.g.
     # "model.Q4_K_M.gguf". Leave blank to auto-pick the first .gguf, or to
     # load full-precision/safetensors weights via transformers instead.
-    llm_gguf_file: str = ""
+    # Q4_K_M is the repo's recommended quant — 1.31 GB, comfortable on 8 GB VRAM.
+    llm_gguf_file: str = "Qwen3.8-2B-Q4_K_M.gguf"
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
+    # NOTE: this is a reasoning model — every response opens with a
+    # <think>...</think> block per its own model card. Nothing currently
+    # strips that before it's spoken/logged.
     llm_system_prompt: str = (
-        "You are NixOrb, a helpful AI assistant running on Arch Linux with KDE Plasma 6. "
-        "You have a witty, slightly sardonic personality like GLaDOS. "
+        "You are NixOrb, a voice assistant running on Arch Linux with KDE Plasma 6. "
+        "You're direct, dryly funny, and don't pad your answers. "
         "Keep responses concise unless asked for detail. "
         "You can execute bash commands, search the web, capture the screen, and remember conversations."
     )
@@ -84,13 +88,17 @@ class Settings(BaseModel):
 
     # ── TTS ──────────────────────────────────────────────────────── #
     # "piper" | "glados" | "huggingface" | "openai"
-    tts_backend: str = "piper"
-    tts_voice: str = "en_US-lessac-medium"
+    tts_backend: str = "huggingface"
+    # For tts_backend="huggingface": Breeze-TTS-2 is a voice-design model (no
+    # named presets) — this is fed to it as a natural-language voice instruction.
+    tts_voice: str = "A calm, clear-voiced woman with a dry, confident wit and unhurried delivery."
     tts_speed: float = 1.0
     tts_volume: float = 1.0
     # HF repo id for tts_backend="huggingface" (e.g. "microsoft/speecht5_tts",
     # "suno/bark-small", "hexgrad/Kokoro-82M", any text-to-speech pipeline).
-    tts_hf_repo: str = ""
+    # NOTE: Breeze-TTS-2 needs ~7.7 GB VRAM minimum (12 GB recommended per its
+    # own card) — confirm this actually fits your card before relying on it.
+    tts_hf_repo: str = "BreezeBlue/Breeze-TTS-2"
 
     # ── Wake Word ────────────────────────────────────────────────── #
     # openwakeword ships as the optional "wakeword" extra, so this stays
@@ -101,6 +109,8 @@ class Settings(BaseModel):
     # .onnx/.tflite model you trained yourself. "hey_nixorb" is not a real
     # model — nobody has trained one — so this falls back to "hey_jarvis"
     # at runtime with a warning until you point it at a real one.
+    # Comma-separate multiple names/paths to activate on any of them, e.g.
+    # "~/.local/share/nixorb/wakeword/hey_nixorb.onnx,~/.local/share/nixorb/wakeword/nixorb.onnx".
     wake_word_model: str = "hey_nixorb"
     wake_word_sensitivity: float = 0.5
 

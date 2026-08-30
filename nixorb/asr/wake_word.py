@@ -151,9 +151,18 @@ class WakeWordDetector:
             except Exception as exc:
                 log.debug("WakeWord: model download step skipped: %s", exc)
 
-        model_path, label = resolve_wake_word_model(self._model_name)
-        self._resolved_label = label
-        if model_path is None:
+        model_paths: list[str] = []
+        labels: list[str] = []
+        for raw_name in self._model_name.split(","):
+            raw_name = raw_name.strip()
+            if not raw_name:
+                continue
+            model_path, label = resolve_wake_word_model(raw_name)
+            if model_path is not None:
+                model_paths.append(model_path)
+                labels.append(label)
+        self._resolved_label = ", ".join(labels) if labels else self._model_name
+        if not model_paths:
             log.error(
                 "WakeWord: no usable model found (not '%s', and the bundled "
                 "fallback is unavailable) — wake word disabled", self._model_name
@@ -162,14 +171,14 @@ class WakeWordDetector:
 
         try:
             log.info(
-                "WakeWord: loading model '%s' (threshold=%.2f)",
-                label, self._threshold,
+                "WakeWord: loading model(s) '%s' (threshold=%.2f)",
+                self._resolved_label, self._threshold,
             )
-            model = Model(wakeword_model_paths=[model_path])
-            log.info("WakeWord: model loaded")
+            model = Model(wakeword_model_paths=model_paths)
+            log.info("WakeWord: model(s) loaded")
             return model
         except Exception as exc:
-            log.error("WakeWord: failed to load model '%s': %s", label, exc)
+            log.error("WakeWord: failed to load model(s) '%s': %s", self._resolved_label, exc)
             return None
 
     def _unload_model(self, model) -> None:

@@ -68,6 +68,15 @@ pip install --quiet \
     --index-url https://download.pytorch.org/whl/cu118
 echo "  PyTorch installed"
 
+# llama-cpp-python compiles from source by default (several minutes). The
+# model this project ships with is tiny (~1.3 GB Q4_K_M GGUF), so CPU
+# inference is plenty fast — grab the prebuilt CPU wheel instead of building.
+echo ""
+echo "==> [3b/7] Installing llama-cpp-python (prebuilt CPU wheel)..."
+pip install --quiet llama-cpp-python \
+    --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+echo "  llama-cpp-python installed"
+
 # ── 4. Install NixOrb (hatchling backend, supports editable) ──────── #
 echo ""
 echo "==> [4/7] Installing NixOrb (editable)..."

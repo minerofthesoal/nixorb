@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import logging
+from functools import partial
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
@@ -32,7 +33,10 @@ def _load_hf_tts(repo_id: str, token: str | None) -> tuple[str, Any]:
     from transformers import pipeline
     task: Any = "text-to-speech"
     try:
-        pipe = pipeline(task, model=repo_id, token=token or None, device=_hf_tts_device())
+        pipe = pipeline(
+            task, model=repo_id, token=token or None, device=_hf_tts_device(),
+            trust_remote_code=True,
+        )
         return ("pipeline", pipe)
     except Exception as exc:
         # Not every HF repo id is actually a TTS model (e.g. a plain causal-LM
@@ -75,7 +79,12 @@ class HuggingFaceTTS:
             async with vram.lease("hf_tts") as obj:
                 kind, pipe = obj
                 if kind == "pipeline":
-                    output = await loop.run_in_executor(None, cast(Any, pipe), text)
+                    call = (
+                        partial(cast(Any, pipe), text, forward_params={"instruction": self._voice})
+                        if self._voice
+                        else partial(cast(Any, pipe), text)
+                    )
+                    output = await loop.run_in_executor(None, call)
                     audio  = output["audio"]
                     sr     = output["sampling_rate"]
                 else:

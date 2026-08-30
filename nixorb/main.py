@@ -205,6 +205,22 @@ async def _async_main(settings, app) -> None:
         if settings.plugins_enabled:
             plugin_loader.load_all()
 
+        # Let timer_plugin speak its reminders through the active TTS
+        # backend, not just a desktop notification. set_timer() fires from
+        # a plain threading.Timer (not the event loop), so bridge it back
+        # with run_coroutine_threadsafe.
+        try:
+            from nixorb.plugins.builtin.timer_plugin import set_speak_callback
+
+            _main_loop = asyncio.get_running_loop()
+
+            def _speak_reminder(text: str) -> None:
+                asyncio.run_coroutine_threadsafe(tts.speak(text), _main_loop)
+
+            set_speak_callback(_speak_reminder)
+        except Exception as exc:
+            log.debug("Timer: could not wire TTS speak callback: %s", exc)
+
         # ── Control socket ───────────────────────────────────────── #
         # This is what makes `nixorb trigger` work, and with it any KDE
         # global shortcut bound to that command.

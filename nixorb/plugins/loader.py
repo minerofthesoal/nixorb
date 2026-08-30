@@ -40,22 +40,32 @@ class PluginLoader:
         self._tools: dict[str, Callable] = {}
 
     def load_all(self) -> int:
-        """Load all plugins from the plugin directory."""
+        """Load all plugins: bundled builtins first, then the user directory."""
         count = 0
         # Pick up plugin files created since this process started.
         importlib.invalidate_caches()
-        if not self._plugin_dir.exists():
-            log.warning("Plugin dir not found: %s", self._plugin_dir)
-            return 0
 
-        for file_path in sorted(self._plugin_dir.glob("*.py")):
+        builtin_dir = Path(__file__).parent / "builtin"
+        for file_path in sorted(builtin_dir.glob("*.py")):
             if file_path.name.startswith("_"):
                 continue
             try:
                 self._load_plugin(file_path)
                 count += 1
             except Exception as exc:
-                log.error("Plugin: failed to load %s: %s", file_path.name, exc)
+                log.error("Plugin: failed to load builtin %s: %s", file_path.name, exc)
+
+        if not self._plugin_dir.exists():
+            log.warning("Plugin dir not found: %s", self._plugin_dir)
+        else:
+            for file_path in sorted(self._plugin_dir.glob("*.py")):
+                if file_path.name.startswith("_"):
+                    continue
+                try:
+                    self._load_plugin(file_path)
+                    count += 1
+                except Exception as exc:
+                    log.error("Plugin: failed to load %s: %s", file_path.name, exc)
 
         log.info("Plugin: loaded %d plugin(s)", count)
         bus.emit_sync(
