@@ -144,7 +144,7 @@ class HuggingFaceLLMBackend:
             tokenizer = AutoTokenizer.from_pretrained(self._model_id, token=self._token)
             # GTX 1080 is Pascal: fp16 works, bf16 does not.
             dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-            model = AutoModelForCausalLM.from_pretrained(
+            model: Any = AutoModelForCausalLM.from_pretrained(
                 self._model_id,
                 token=self._token,
                 dtype=dtype,
