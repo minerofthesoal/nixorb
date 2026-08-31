@@ -30,17 +30,26 @@ dependencies = [
     "pydantic>=2.7.0",
     "pydantic-settings>=2.3.0",
     "tomli-w>=1.0.0",
-    "typer[all]>=0.12.3",
+    "typer>=0.12.3",
     "chromadb>=0.5.3",
     "pynput>=1.7.6",
     "cryptography>=42.0",
     # Local HuggingFace LLM/ASR/TTS models — needed for the default config,
     # which uses llm_backend="huggingface", asr_backend="huggingface", and
-    # tts_backend="huggingface". Pulled via [tool.uv.sources] below on the
-    # cu118 index — pinned for the GTX 1080 (CUDA 11.8) this project targets.
-    # On a different GPU, override torch/torchaudio to a matching build.
-    "torch==2.7.1+cu118",
-    "torchaudio==2.7.1+cu118",
+    # tts_backend="huggingface". This deliberately does NOT include torch —
+    # it's not here below either, on purpose. torch needs a build matching
+    # your actual hardware (CPU, this project's own GTX 1080/cu118 pin, a
+    # different CUDA version, ROCm, ...), and there's no one variant that's
+    # correct as an unconditional dependency of a publicly-published
+    # package: pinning a specific +cu118 local version here previously
+    # broke CI's CPU-only runner outright (pip can't satisfy an exact
+    # +cu118 build from anywhere but PyTorch's own cu118 index, which
+    # nothing here points it at) and would equally break for anyone not on
+    # this exact card. Install torch yourself first — see
+    # requirements-cuda.txt for the GTX 1080 pin, or plain `pip install
+    # torch torchaudio` for CPU/whatever your platform resolves by
+    # default — matching the ordering install.sh/install.fish and
+    # .github/workflows/ci.yml already use.
     "transformers>=4.44.0",
     "accelerate>=0.33.0",
     "huggingface_hub>=0.24.0",
@@ -91,14 +100,7 @@ openai = ["openai>=1.40.0"]
 # flags. uv reads this section; plain pip does not — install.sh/install.fish
 # pass the same index URLs explicitly on their pip install lines instead.
 [tool.uv.sources]
-torch = [{ index = "pytorch-cu118" }]
-torchaudio = [{ index = "pytorch-cu118" }]
 llama-cpp-python = [{ index = "llama-cpu" }]
-
-[[tool.uv.index]]
-name = "pytorch-cu118"
-url = "https://download.pytorch.org/whl/cu118"
-explicit = true
 
 [[tool.uv.index]]
 name = "llama-cpu"

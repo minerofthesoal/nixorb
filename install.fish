@@ -110,7 +110,7 @@ pip install --quiet \
     "pydantic>=2.7" \
     "pydantic-settings>=2.3" \
     "tomli-w>=1.0" \
-    "typer[all]" \
+    "typer" \
     cryptography \
     pygments \
     aiofiles \
