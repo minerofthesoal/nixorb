@@ -104,7 +104,20 @@ wake_word_model = "/home/you/.local/share/nixorb/wakeword_training/models/hey_ni
 (nixorb's `wake_word.py` now supports comma-separated model paths — any one
 of them firing activates the orb.)
 
-**You still need openwakeword actually installed to use the result** — see
-the `wakeword` extra in nixorb's own `pyproject.toml`. It now installs from
-GitHub main rather than PyPI, which fixes the `tflite-runtime`/Python 3.12
-wall from earlier in this project's setup.
+**You still need openwakeword actually installed to use the result.** On
+Python 3.12+, `pip install nixorb[wakeword]` alone still hits the
+`tflite-runtime` wall (PyPI's published openwakeword 0.6.0 depends on it,
+and it never shipped a wheel past cp311 — see the comment above the
+`wakeword` extra in nixorb's own `pyproject.toml` for the full story,
+including why this couldn't just be fixed by pointing the extra at GitHub:
+PyPI itself rejects direct-URL dependencies in published metadata). Actually
+usable install on 3.12+ today:
+
+```bash
+pip install nixorb  # base install, skip the [wakeword] extra — it'll still fail
+pip install 'openwakeword @ git+https://github.com/dscripka/openWakeWord.git'
+```
+
+That pulls openWakeWord's GitHub main branch, which has already migrated
+off tflite-runtime to `ai-edge-litert` (real cp312+ wheels exist for it) —
+just not released to PyPI yet.

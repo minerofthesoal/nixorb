@@ -62,16 +62,26 @@ dev = [
     "mypy>=1.10",
 ]
 # NOT installed by default (a separate model-training step is required
-# before it's useful anyway — see scripts/wakeword_training/). Also: this
-# pins to GitHub main, not PyPI. PyPI's published openwakeword==0.6.0 still
-# lists tflite-runtime>=2.8.0 as a hard Linux dependency, and tflite-runtime
-# never published a wheel past cp311 — unsatisfiable on this project's
-# requires-python (>=3.12), on any 3.12+ interpreter. That's fixed upstream:
-# openWakeWord's GitHub main branch already migrated to ai-edge-litert
-# (Google's actively-maintained LiteRT), which does publish real cp312/
-# cp313/cp314 wheels — that fix just hasn't made it into a new PyPI release
-# yet. Once it does, this can go back to a plain version pin.
-wakeword = ["openwakeword @ git+https://github.com/dscripka/openWakeWord.git"]
+# before it's useful anyway — see scripts/wakeword_training/).
+#
+# This is a plain PyPI version pin, not a git+https reference — PyPI
+# rejects uploads with direct-URL dependencies in their metadata outright
+# (tried it; got "400 Can't have direct dependency"). Which means this
+# extra, installed as-is via `pip install nixorb[wakeword]`, still hits
+# the tflite-runtime wall on Python 3.12+: PyPI's published openwakeword
+# 0.6.0 depends on tflite-runtime>=2.8.0, which never shipped a wheel past
+# cp311. That's fixed on openWakeWord's GitHub main branch (migrated to
+# ai-edge-litert, which does publish cp312+ wheels) — but a fix that only
+# exists as an unreleased git commit can't be expressed in package
+# metadata PyPI will accept. To actually get a working install on
+# Python 3.12+ today:
+#
+#   pip install nixorb  # base install, no [wakeword] extra
+#   pip install 'openwakeword @ git+https://github.com/dscripka/openWakeWord.git'
+#
+# Once openWakeWord cuts a new PyPI release with this fix, this extra can
+# go back to depending on it normally and that workaround goes away.
+wakeword = ["openwakeword>=0.6.0"]
 # Any OpenAI-compatible endpoint (real OpenAI, or a local vLLM / TGI /
 # LM Studio / llama.cpp server) — llm_backend="openai" or tts_backend="openai".
 openai = ["openai>=1.40.0"]
@@ -108,16 +118,6 @@ Issues = "https://github.com/minerofthesoal/nixorb/issues"
 
 [tool.hatch.version]
 path = "nixorb/__init__.py"
-
-[tool.hatch.metadata]
-# Required because the "wakeword" extra points at a git+https URL (see the
-# comment above that extra in [project.optional-dependencies] for why).
-# Without this, hatchling refuses to build at all — it inherits PyPI's rule
-# that published package metadata can't contain direct references, since
-# an index-only resolver can't follow them. This project isn't published to
-# PyPI, so the restriction doesn't actually apply, but hatchling enforces it
-# unconditionally unless this is set.
-allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["nixorb"]
