@@ -14,22 +14,27 @@ from nixorb.core.event_bus import Event
 from nixorb.settings import Settings
 
 
-def _tts(piper: bool, espeak: bool):
+def _tts(piper: bool, espeak: bool, voice: str | None = None):
     from nixorb.tts.piper_tts import PiperTTS
 
+    kwargs = {"tts_voice": voice} if voice is not None else {}
     with patch("shutil.which", lambda name: {"piper": piper, "espeak-ng": espeak}
                .get(name, False) or None):
-        engine = PiperTTS(Settings())
+        engine = PiperTTS(Settings(**kwargs))
     engine._piper_available = piper
     engine._espeak_available = espeak
     return engine
 
 
 def test_default_settings_use_the_offline_engine():
-    """v2 speaks through Piper locally — no API keys, no downloads at runtime."""
+    """Default speech is the bundled HuggingFace engine — no API keys, no
+    external binary to install. PiperTTS (below) is exercised by explicitly
+    selecting a Piper voice, since it's still the offline fallback engine."""
     s = Settings()
-    assert s.tts_backend == "piper"
-    assert s.tts_voice == "en_US-lessac-medium"
+    assert s.tts_backend == "huggingface"
+    assert s.tts_voice == (
+        "A calm, clear-voiced woman with a dry, confident wit and unhurried delivery."
+    )
 
 
 def test_availability_reflects_installed_engines():
@@ -190,7 +195,7 @@ def test_finds_voice_in_the_aur_nested_layout(tmp_path):
     model = nested / "en_US-lessac-medium.onnx"
     model.write_bytes(b"")
 
-    engine = _tts(piper=True, espeak=False)
+    engine = _tts(piper=True, espeak=False, voice="en_US-lessac-medium")
     with patch.object(piper_tts, "VOICE_DIRS_FLAT", ()), \
          patch.object(piper_tts, "VOICE_DIRS_NESTED", (tmp_path,)):
         assert engine._find_voice_model() == model
@@ -202,7 +207,7 @@ def test_finds_voice_in_a_flat_directory(tmp_path):
     model = tmp_path / "en_US-lessac-medium.onnx"
     model.write_bytes(b"")
 
-    engine = _tts(piper=True, espeak=False)
+    engine = _tts(piper=True, espeak=False, voice="en_US-lessac-medium")
     with patch.object(piper_tts, "VOICE_DIRS_FLAT", (tmp_path,)), \
          patch.object(piper_tts, "VOICE_DIRS_NESTED", ()):
         assert engine._find_voice_model() == model

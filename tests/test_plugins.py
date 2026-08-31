@@ -5,12 +5,26 @@ import pytest
 
 from nixorb.plugins.loader import PluginLoader
 
+# load_all() always loads these bundled builtins in addition to whatever is
+# in the user's plugin_dir, so "an empty user directory" means "just the
+# builtins", not "nothing".
+BUILTIN_PLUGIN_NAMES = {
+    "calculator_plugin",
+    "kdeconnect_plugin",
+    "system_info_plugin",
+    "systemd_plugin",
+    "timer_plugin",
+    "weather_plugin",
+}
+
 
 def test_empty_dir(tmp_path):
     loader = PluginLoader(tmp_path)
     loader.load_all()
-    assert loader.plugin_names() == []
-    assert loader.get_tool_definitions() == []
+    assert set(loader.plugin_names()) == BUILTIN_PLUGIN_NAMES
+    # Each builtin advertises a TOOL_DEFINITION; an empty user dir just means
+    # no *extra* tools on top of those.
+    assert len(loader.get_tool_definitions()) == len(BUILTIN_PLUGIN_NAMES)
 
 
 def test_loads_valid_plugin(tmp_path):
@@ -68,7 +82,9 @@ def test_skips_dunder_files(tmp_path):
     (tmp_path / "_private.py").write_text("x = 1")
     loader = PluginLoader(tmp_path)
     loader.load_all()
-    assert loader.plugin_names() == []
+    # Neither dunder/underscore-prefixed file counts as a plugin — only the
+    # always-loaded builtins should show up.
+    assert set(loader.plugin_names()) == BUILTIN_PLUGIN_NAMES
 
 
 def test_reload(tmp_path):

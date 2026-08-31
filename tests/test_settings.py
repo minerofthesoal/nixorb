@@ -5,13 +5,15 @@ from nixorb.settings import _CONFIG_ENV, Settings
 
 
 def test_defaults():
-    """v2 is local-only: Ollama for the LLM, Piper for speech."""
+    """Local-only: bundled HuggingFace models, no external server or binary to install."""
     s = Settings()
-    assert s.llm_backend == "ollama"
-    assert s.llm_model == "llama3.2"
+    assert s.llm_backend == "huggingface"
+    assert s.llm_model == "empero-ai/Qwen3.8-2B-Distill-GGUF"
     assert s.ollama_host == "http://localhost:11434"
-    assert s.tts_backend == "piper"
-    assert s.tts_voice == "en_US-lessac-medium"
+    assert s.tts_backend == "huggingface"
+    assert s.tts_voice == (
+        "A calm, clear-voiced woman with a dry, confident wit and unhurried delivery."
+    )
     assert s.hotkey == "Ctrl+Alt+Space"
     assert s.require_action_confirmation is True
 
@@ -52,7 +54,7 @@ def test_save_and_reload(tmp_path, monkeypatch):
 def test_load_missing_config_returns_defaults(tmp_path, monkeypatch):
     cfg = tmp_path / "nonexistent.toml"
     monkeypatch.setenv(_CONFIG_ENV, str(cfg))
-    assert Settings.load().llm_backend == "ollama"
+    assert Settings.load().llm_backend == "huggingface"
 
 
 def test_none_values_not_in_toml(tmp_path, monkeypatch):
@@ -95,7 +97,7 @@ def test_malformed_toml_falls_back_to_defaults(tmp_path, monkeypatch):
     cfg = tmp_path / "config.toml"
     cfg.write_text("this is not [ valid toml =\n")
     monkeypatch.setenv(_CONFIG_ENV, str(cfg))
-    assert Settings.load().llm_model == "llama3.2"
+    assert Settings.load().llm_model == "empero-ai/Qwen3.8-2B-Distill-GGUF"
 
 
 def test_round_trip_preserves_every_field(tmp_path, monkeypatch):
