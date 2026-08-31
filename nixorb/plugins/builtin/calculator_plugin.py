@@ -12,7 +12,8 @@ from __future__ import annotations
 import ast
 import math
 import operator
-from typing import Callable, cast
+from collections.abc import Callable
+from typing import cast
 
 TOOL_DEFINITION = {
     "type": "function",

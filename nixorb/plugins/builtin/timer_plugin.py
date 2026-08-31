@@ -8,6 +8,7 @@ timer is scheduled; the notification fires later on its own thread.
 """
 from __future__ import annotations
 
+import contextlib
 import shutil
 import subprocess
 import threading
@@ -53,18 +54,14 @@ def set_speak_callback(callback: Callable[[str], None] | None) -> None:
 def _fire(label: str) -> None:
     message = label or "Timer's up"
     if shutil.which("notify-send"):
-        try:
+        with contextlib.suppress(subprocess.SubprocessError, OSError):
             subprocess.run(
                 ["notify-send", "-a", "NixOrb", "-i", "alarm-symbolic", "Timer", message],
                 timeout=5,
             )
-        except (subprocess.SubprocessError, OSError):
-            pass
     if _speak_callback is not None:
-        try:
+        with contextlib.suppress(Exception):
             _speak_callback(message)
-        except Exception:
-            pass
 
 
 def set_timer(seconds: float, label: str = "") -> str:
