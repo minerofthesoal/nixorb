@@ -75,6 +75,19 @@ class PiperTTS:
         self._piper_available = self._piper is not None
         self._espeak_available = shutil.which("espeak-ng") is not None
         self._aplay_available = shutil.which("aplay") is not None
+        self._stopped = False
+
+    name = "piper"
+
+    def stop(self) -> None:
+        """Cut playback off mid-sentence (barge-in)."""
+        self._stopped = True
+        try:
+            import sounddevice as sd
+
+            sd.stop()
+        except Exception:
+            pass
 
     def _find_voice_model(self) -> Path | None:
         """Find the Piper voice model file."""
@@ -110,6 +123,7 @@ class PiperTTS:
             return
 
         text = text.strip()
+        self._stopped = False
         log.info("TTS: speaking '%s…'", text[:60])
         await bus.emit(Event.TTS_START, data={"text": text[:200]},
                        source="PiperTTS")
@@ -220,6 +234,8 @@ class PiperTTS:
 
     def _play_pcm(self, data: bytes, sample_rate: int, channels: int) -> None:
         """Play raw PCM audio data."""
+        if self._stopped:
+            return
         try:
             import sounddevice as sd
 

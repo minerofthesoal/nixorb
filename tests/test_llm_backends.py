@@ -9,7 +9,7 @@ pytestmark = pytest.mark.asyncio
 
 
 async def test_offline_fallback_switches_after_threshold(started_bus):
-    from nixorb.llm.backends import OfflineFallbackManager
+    from nixorb.llm.factory import OfflineFallbackManager
 
     primary  = MagicMock()
     fallback = MagicMock()

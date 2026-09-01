@@ -7,14 +7,32 @@ orb_size = 88
 orb_opacity = 1.0
 
 # ── ASR ────────────────────────────────────────────────────────── #
+# "faster-whisper" | "huggingface" (any ASR model on the Hub) | "nemotron"
+asr_backend = "faster-whisper"
+# faster-whisper: a size ("large-v3"). Otherwise a Hugging Face repo id, e.g.
+#   "openai/whisper-small"  /  "nvidia/nemotron-3.5-asr-streaming-0.6b"
 asr_model = "large-v3"
+# Locale ("en-US"), bare code ("en"), or "auto" where the model supports it.
 asr_language = "en"
 mic_sensitivity = 0.5
 
-# ── LLM (Local Ollama) ─────────────────────────────────────────── #
+# Nemotron only. Right-context in 80ms frames: 0 | 3 | 6 | 13, trading
+# latency (80 / 320 / 560 / 1120 ms) against accuracy.
+asr_nemotron_lookahead = 3
+# Emit partial transcripts while you are still speaking. Nemotron only.
+asr_streaming = false
+
+# ── LLM ────────────────────────────────────────────────────────── #
+# "ollama" (local daemon) | "huggingface" (any causal LM, in-process)
 llm_backend = "ollama"
 llm_model = "llama3.2"
 ollama_host = "http://localhost:11434"
+
+# Used when llm_backend = "huggingface".
+llm_hf_model = "Qwen/Qwen2.5-3B-Instruct"
+# 4-bit quantisation so a 7B fits beside the ASR model on 8 GB (needs
+# bitsandbytes: pip install 'nixorb[quant]').
+llm_hf_load_in_4bit = false
 llm_max_tokens = 512
 llm_temperature = 0.7
 
@@ -22,16 +40,47 @@ llm_temperature = 0.7
 action_confirm_timeout = 60.0
 
 # ── TTS ────────────────────────────────────────────────────────── #
+# "piper" (offline, AUR piper-tts) | "huggingface" | "espeak"
 tts_backend = "piper"
 tts_voice = "en_US-lessac-medium"
 tts_speed = 1.0
 tts_volume = 1.0
+
+# Speak each sentence as the model produces it, rather than waiting for the
+# whole answer. This is most of what makes the orb feel responsive.
+tts_streaming = true
+
+# Used when tts_backend = "huggingface". Any TTS model on the Hub.
+tts_hf_model = "microsoft/speecht5_tts"
+# SpeechT5 speaker x-vector: a .npy path, a cmu-arctic-xvectors index, or
+# blank for the default voice. Ignored by other models.
+tts_hf_speaker = ""
 
 # ── Wake Word ──────────────────────────────────────────────────── #
 # Requires the optional extra:  pip install 'nixorb[wakeword]'
 wake_word_enabled = false
 wake_word_model = "hey_nixorb"
 wake_word_sensitivity = 0.5
+
+# ── Hugging Face ───────────────────────────────────────────────── #
+# Only needed for gated or private repos. Falls back to $HF_TOKEN.
+hf_token = ""
+# "auto" | "cuda" | "cpu"
+hf_device = "auto"
+# Override the model cache (default: ~/.cache/huggingface).
+hf_cache_dir = ""
+# Off by default: this executes Python from the model repo.
+hf_trust_remote_code = false
+
+# ── Conversation ───────────────────────────────────────────────── #
+# Triggering while the orb is talking stops it and listens, instead of
+# queueing behind the current answer.
+barge_in = true
+# After answering, keep listening this long for a follow-up without needing
+# the hotkey again. 0 disables it.
+follow_up_seconds = 6.0
+# Cap spoken replies when tts_streaming is off.
+tts_max_sentences = 6
 
 # ── Features ───────────────────────────────────────────────────── #
 screen_capture_enabled = true

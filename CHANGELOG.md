@@ -1,3 +1,92 @@
+## [0.3.2] — 2026-09-01
+
+Version reset from the 2.0.x line to an honest pre-1.0 number.
+
+### Added — any model on Hugging Face
+
+Every stage is now pluggable, selected by `asr_backend`, `llm_backend` and
+`tts_backend`. The previous "Hugging Face" modules could not work at all:
+they read `Settings` fields (`tts_hf_repo`, `hf_token`, `openai_api_key`)
+that v2 had removed, and nothing imported them. They are replaced with code
+that runs.
+
+- **ASR** — `faster-whisper` (default), or `huggingface` for any model with
+  an `automatic-speech-recognition` tag (Whisper, Wav2Vec2, MMS, SeamlessM4T,
+  Parakeet…). Language is only passed to models that accept it; sending
+  `language=` to a CTC model is an error, not a no-op.
+- **LLM** — `ollama` (default), or `huggingface` for any causal LM, streamed
+  token by token through `TextIteratorStreamer` with the model's own chat
+  template. Generation runs in a worker thread; on the event loop it would
+  freeze the UI for the whole answer. Tool calls emitted in-band as
+  `<tool_call>` JSON (Qwen, Hermes, …) are parsed and dispatched.
+- **TTS** — `piper` (default), `huggingface` for any TTS model, or `espeak`.
+  SpeechT5 gets explicit speaker-embedding handling since the pipeline
+  cannot supply an x-vector on its own.
+- `nixorb/hf.py` centralises device selection, dtype, token resolution and
+  cache directory. A missing package now names the pip command that fixes it.
+- `nixorb status` reports all three backends and whether each can load.
+
+### Added — NVIDIA Nemotron 3.5 ASR
+
+Native support for `nvidia/nemotron-3.5-asr-streaming-0.6b`, with its own
+backend rather than the generic pipeline, because the point of the model is
+cache-aware streaming: partial transcripts arrive while you are still
+talking. 40 language-locales, punctuation and capitalisation, and `auto`
+language detection whose `<xx-XX>` tag is stripped from the transcript and
+logged.
+
+- `asr_nemotron_lookahead` selects the right-context: 0/3/6/13 frames →
+  80/320/560/1120 ms, validated against the checkpoint's own supported list
+  rather than a hardcoded one.
+- Setting `asr_model` to a Nemotron checkpoint selects the native backend
+  even if `asr_backend` was left alone, so streaming is not lost silently.
+
+### Added — it behaves like a voice assistant
+
+- **Speaks while it thinks.** `nixorb/tts/speaker.py` synthesises each
+  sentence as the model produces it. Measured on a simulated stream: first
+  words at 0.30s against generation finishing at 0.91s.
+- **Barge-in.** Triggering while it is talking stops playback and drops the
+  queue instead of waiting its turn (`barge_in`).
+- **Follow-ups.** After answering it listens again briefly, so a second
+  question needs no second hotkey press (`follow_up_seconds`, capped at
+  `MAX_FOLLOW_UPS` so a room with a television cannot loop forever).
+- `<ACTION>` blocks are suppressed from speech *as they stream*, including
+  when the tag is split across token boundaries — not read aloud and cleaned
+  up afterwards.
+- The default system prompt now asks for spoken answers: one or two
+  sentences, answer first, no markdown.
+
+### Fixed
+
+- **transformers floor was too low for the default model.** The `[hf]` extra
+  allowed `>=4.44` while the default ASR checkpoint needs `>=5.13`, so a
+  valid install would resolve and then die inside `from_pretrained` with an
+  unrecognised-architecture error. Both extras now require `>=5.13`, and
+  `nixorb.hf.require_transformers()` reports the installed version and the
+  upgrade command instead.
+- **Python 3.12**: `requires-python` claimed 3.12 but nothing verified it.
+  The suite now runs on 3.12; 3.13 added to the classifiers.
+- A module-level `importorskip("transformers")` in the backend tests was
+  skipping all 69 of them — including selection and pure-helper tests that
+  never touch transformers — on any machine without it.
+- `Speaker.start()` called `engine.stop()` on an idle engine; an engine
+  entitled to treat `stop()` as terminal would then stay silent forever.
+- Streaming chunk boundaries use the feature extractor's `win_length` (what
+  the processor derives its chunk sizes from) rather than `n_fft`. They
+  coincide on the released checkpoint; a fine-tune with a different window
+  would have desynced every chunk.
+- Startup logged "Ollama ready" and "Querying LLM: llama3.2" regardless of
+  which backend was actually running.
+- A runaway transcript was logged in full, turning one line into a screenful.
+
+### Removed
+
+`nixorb/llm/backends.py`, `nixorb/tts/glados_tts.py` and
+`nixorb/tts/openai_tts.py`. All three were unreachable from the running app
+and referenced settings that no longer exist; `openai_tts` also contradicted
+the local-only design. `OfflineFallbackManager` moved to `nixorb/llm/factory.py`.
+
 ## [2.0.2] — 2026-08-27
 
 ### Changed

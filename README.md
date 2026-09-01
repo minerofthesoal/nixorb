@@ -1,19 +1,72 @@
-# NixOrb v2.0 🌐
+# NixOrb 🌐
 
-**Floating AI assistant orb for Arch Linux — KDE Plasma 6 Wayland — Local-Only**
+**Floating AI assistant orb for Arch Linux — KDE Plasma 6 Wayland — runs entirely on your machine**
 
 A complete ground-up remake of NixOrb with a focus on local AI, rock-solid Qt6 stability, and clean modular architecture.
 
 ---
 
-## What's New in v2.0
+## Models
 
-- **Local-only AI** — Ollama backend, no API keys needed
-- **Fixed Qt errors** — Proper qasync integration, QSocketNotifier fixes, accessibility bridge disabled
-- **Simplified architecture** — Removed broken backends, focused on what works
-- **Better VRAM management** — Priority eviction keeps GTX 1080 from OOM
-- **Offline TTS** — Piper + espeak-ng fallback
-- **Improved settings** — GUI settings editor with live updates
+Every stage is pluggable. Point it at Ollama, at any model on the Hugging Face
+Hub, or at NVIDIA Nemotron for streaming speech.
+
+| Stage | Backends | Setting |
+|-------|----------|---------|
+| **Speech → text** | `faster-whisper` (default) · `huggingface` (any ASR model) · `nemotron` | `asr_backend` |
+| **Thinking** | `ollama` (default) · `huggingface` (any causal LM) | `llm_backend` |
+| **Text → speech** | `piper` (default) · `huggingface` (any TTS model) · `espeak` | `tts_backend` |
+
+```bash
+pip install 'nixorb[hf]'        # any Hugging Face ASR / TTS / LLM
+pip install 'nixorb[nemotron]'  # NVIDIA Nemotron 3.5 streaming ASR
+pip install 'nixorb[quant]'     # 4-bit LLMs (bitsandbytes)
+```
+
+### Any Hugging Face model
+
+```toml
+# Speech recognition — anything with an automatic-speech-recognition tag
+asr_backend = "huggingface"
+asr_model   = "openai/whisper-small"      # distil-whisper, MMS, Wav2Vec2, …
+
+# Thinking — any causal LM, streamed token by token
+llm_backend  = "huggingface"
+llm_hf_model = "Qwen/Qwen2.5-3B-Instruct"  # Llama, Phi, Gemma, SmolLM, …
+
+# Voice — any text-to-speech model
+tts_backend  = "huggingface"
+tts_hf_model = "facebook/mms-tts-eng"      # SpeechT5, Bark, VITS, Parler, …
+```
+
+Gated repos need a token: set `hf_token`, or export `HF_TOKEN`.
+
+### NVIDIA Nemotron 3.5 ASR (streaming)
+
+[`nvidia/nemotron-3.5-asr-streaming-0.6b`](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b)
+is a 0.6B FastConformer-RNNT covering 40 language-locales with punctuation and
+capitalisation. It gets its own backend rather than going through the generic
+pipeline because it is **cache-aware**: it reuses encoder state across strictly
+non-overlapping chunks, so partial transcripts arrive *while you are still
+talking* instead of after you stop.
+
+```toml
+asr_backend  = "nemotron"
+asr_model    = "nvidia/nemotron-3.5-asr-streaming-0.6b"
+asr_language = "auto"       # or a locale: "en-US", "de-DE", "ja-JP", …
+asr_streaming = true        # emit partials as you speak
+
+# Right-context in 80ms frames — the latency/accuracy dial.
+asr_nemotron_lookahead = 3  # 0→80ms  3→320ms  6→560ms  13→1120ms
+```
+
+With `asr_language = "auto"` the model detects the spoken language and reports
+it; NixOrb strips the `<en-US>` tag from the transcript and logs the detection.
+
+Needs `transformers >= 5.13` — that is where `Nemotron3_5Asr` landed, and it
+is the floor for the `[hf]` and `[nemotron]` extras. On an older install
+NixOrb names the version it found and the command to fix it, then falls back
+to offline transcription through the generic pipeline.
 
 ## Architecture Overview
 
@@ -45,6 +98,25 @@ nixorb check          # Check dependencies
 `$XDG_RUNTIME_DIR`, so it works the same under Wayland, X11, or a bare TTY —
 which is what makes it usable as a KDE global shortcut.
 
+## Talking to it
+
+It is built to be used by voice, not read.
+
+- **Speaks while it thinks.** Each sentence is synthesised as the model
+  produces it, so the reply starts about a second in rather than after the
+  whole answer is written. (`tts_streaming`)
+- **Talk over it.** Triggering while it is speaking cuts playback off and
+  starts listening, instead of queueing behind the current answer.
+  (`barge_in`)
+- **Keep talking.** After answering it listens again for a few seconds, so
+  "and what about tomorrow?" needs no second hotkey press.
+  (`follow_up_seconds`, 0 to disable)
+- **Answers made for ears.** The default prompt asks for one or two spoken
+  sentences, answer first, no markdown — and shell commands are suppressed
+  from the speech rather than read out character by character.
+- **Live transcripts.** With Nemotron streaming on, partial text arrives
+  while you are still speaking.
+
 ## Pipeline Flow
 
 ```
@@ -56,12 +128,12 @@ Trigger (Hotkey/WakeWord/Click)
   → Execute (<ACTION> sandboxed bash)
 ```
 
-## VRAM Budget (GTX 1080 8GB)
+## VRAM Budget (GTX 1080 8 GB)
 
 | Component | VRAM | Priority |
 |-----------|------|----------|
-| Whisper Large v3 INT8 | ~2.1 GB | LOW — evicted first |
-| Ollama LLM (loaded by Ollama) | ~4.0 GB | HIGH |
+| ASR (Whisper large-v3 INT8, or Nemotron 0.6B) | ~2.1 GB / ~1.3 GB | LOW — evicted first |
+| LLM (Ollama, or an in-process HF model) | ~4.0 GB | HIGH |
 | Piper TTS | ~0.1 GB | MEDIUM |
 | System + KDE | ~0.5 GB | reserved |
 | Safety buffer | 0.25 GB | reserved |
@@ -114,24 +186,26 @@ it out in words.
 
 ```
 nixorb/
-├── core/           # Event bus, VRAM manager
-├── asr/            # Whisper speech-to-text + wake word
-├── llm/            # Ollama local LLM backend
-├── tts/            # Piper text-to-speech
-├── ui/             # Qt6 UI (orb, tray, settings, hotkey)
-├── action/         # Sandboxed command execution + clipboard
+├── core/           # Event bus, VRAM manager, IPC control socket
+├── asr/            # base (mic + VAD) · faster-whisper · HF · Nemotron
+├── llm/            # Ollama · Hugging Face · backend factory
+├── tts/            # Piper · Hugging Face · streaming Speaker
+├── ui/             # Qt6 orb, tray, settings, hotkey, confirm dialog
+├── action/         # Confirmed command execution + clipboard
 ├── memory/         # ChromaDB vector memory
-├── plugins/        # Plugin loader
+├── plugins/        # Plugin loader and tool dispatch
 ├── utils/          # Paths, logging, web search
 ├── vision/         # Screen capture
-├── main.py         # Entry point
+├── hf.py           # Shared Hugging Face device/dtype/auth plumbing
+├── main.py         # Entry point and the conversation loop
 ├── cli.py          # CLI interface
 └── settings.py     # Configuration
 ```
 
 ## Dependencies
 
-- **System**: `python 3.12+`, `qt6-base`, `qt6-declarative`, `qt6-wayland`, `portaudio`, `wl-clipboard`, `grim`, `ollama`
+- **System**: `python 3.12+`, `qt6-base`, `qt6-declarative`, `qt6-wayland`, `portaudio`, `wl-clipboard`, `grim`
+- **LLM**: `ollama`, or `pip install 'nixorb[hf]'` for in-process models
 - **AUR**: `piper-tts` (speech). Note its binary is `piper-tts` — Arch's
   `piper` package is the unrelated gaming-mouse tool. `espeak-ng` is the
   fallback if Piper is missing.
@@ -151,6 +225,9 @@ and whether the configured model is installed.
 | It speaks no audio | `yay -S piper-tts` (AUR), or install `espeak-ng`; the log says which is missing. |
 | `nixorb trigger` says not running | Start the orb first; `nixorb status` shows the control socket. |
 | Commands are always denied | Approve the confirmation dialog, or set `require_action_confirmation = false`. |
+| A Hugging Face model won't load | `nixorb status` names the failure. Gated repo? Set `hf_token`. Custom architecture? `hf_trust_remote_code = true`. |
+| Nemotron has no streaming | Needs `transformers >= 5.13`: `pip install 'nixorb[nemotron]'`. |
+| Out of VRAM with an HF LLM | `llm_hf_load_in_4bit = true` (`pip install 'nixorb[quant]'`), or `hf_device = "cpu"`. |
 | Actions do nothing when run as root | NixOrb disables command execution as root — run it as your normal user. |
 
 ## Testing

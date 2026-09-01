@@ -15,6 +15,7 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Desktop Environment",
     "License :: OSI Approved :: MIT License",
 ]
@@ -45,6 +46,36 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.10",
 ]
+
+# Any ASR / TTS / LLM model on the Hugging Face Hub.
+#
+# transformers >= 5.13 is the floor, not 4.x: that is where Nemotron3_5Asr
+# landed, and it is the default ASR checkpoint. A lower floor resolves fine
+# and then fails at load time with an unregistered-architecture error, which
+# is a far worse experience than a resolver conflict at install time.
+hf = [
+    "transformers>=5.13",
+    "torch>=2.2",
+    "accelerate>=0.30",
+    "huggingface-hub>=0.24",
+    "sentencepiece>=0.2",
+    "protobuf>=4.25",
+    "soundfile>=0.12.1",
+    # SpeechT5 speaker x-vectors come from a dataset repo.
+    "datasets>=2.19",
+]
+
+# NVIDIA Nemotron 3.5 ASR. Same floor as [hf]; kept as a separate extra so
+# you can install streaming speech without pulling datasets/sentencepiece.
+nemotron = [
+    "transformers>=5.13",
+    "torch>=2.2",
+    "soundfile>=0.12.1",
+]
+
+# 4-bit quantisation, so a 7B fits beside the ASR model on 8 GB.
+quant = ["bitsandbytes>=0.43"]
+
 wakeword = ["openwakeword>=0.6.0"]
 
 [project.scripts]

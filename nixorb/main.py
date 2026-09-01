@@ -36,6 +36,20 @@ _SCREEN_KW = frozenset({
 # How many times the model may call tools before we insist on an answer.
 MAX_TOOL_ROUNDS = 4
 
+# Upper bound on one capture, used to size the follow-up wait.
+MAX_RECORDING_SECONDS = 30.0
+
+# How many follow-ups one activation may chain before you press the hotkey
+# again. Stops a room with a television in it from talking to itself forever.
+MAX_FOLLOW_UPS = 8
+
+
+class _FollowUp:
+    """Marks a turn that already has its transcript, so it is not re-recorded."""
+
+    def __init__(self, transcript: str) -> None:
+        self.data = {"transcript": transcript, "follow_up": True}
+
 _WEB_KW = frozenset({
     "search", "look up", "google", "find out", "what is",
     "who is", "when did", "latest", "news", "current",
@@ -123,6 +137,7 @@ async def _async_main(settings, app) -> None:
     llm = None
     wake_word = None
     ipc = None
+    speaker = None
     background: set[asyncio.Task] = set()
 
     try:
@@ -146,30 +161,44 @@ async def _async_main(settings, app) -> None:
         # has even painted, which is indistinguishable from a hang.
         memory = await asyncio.to_thread(VectorMemory, settings.memory_dir)
 
-        # ASR (Whisper)
-        from nixorb.asr.whisper_engine import WhisperEngine
-        asr = WhisperEngine(settings)
+        # ASR — faster-whisper, any Hub model, or Nemotron.
+        from nixorb.asr.factory import create_asr
+        asr = create_asr(settings)
+        log.info("ASR: backend '%s' (%s)", asr.name, settings.asr_model)
 
-        # LLM (Ollama — local only)
-        from nixorb.llm.ollama_backend import OllamaBackend
-        llm = OllamaBackend(settings)
+        # LLM — Ollama daemon or an in-process Hugging Face model.
+        from nixorb.llm.factory import create_llm
+        llm = create_llm(settings)
+        llm_model = (
+            settings.llm_hf_model
+            if settings.llm_backend == "huggingface"
+            else settings.llm_model
+        )
 
         # Check Ollama health
         health = await llm.health_check()
         if health["ok"]:
-            log.info("LLM: Ollama ready with model '%s'", settings.llm_model)
+            log.info("LLM: %s ready with model '%s'", settings.llm_backend, llm_model)
         else:
             log.warning("LLM: %s", health.get("error", "Unknown error"))
-            log.info("LLM: Run 'ollama pull %s' to download the model", settings.llm_model)
+            if settings.llm_backend == "ollama":
+                log.info(
+                    "LLM: Run 'ollama pull %s' to download the model",
+                    settings.llm_model,
+                )
             await bus.emit(
                 Event.LOG,
                 data={"level": "warning", "msg": f"⚠ LLM: {health.get('error', '')}"},
                 source="startup",
             )
 
-        # TTS (Piper)
-        from nixorb.tts.piper_tts import PiperTTS
-        tts = PiperTTS(settings)
+        # TTS — Piper, any Hub model, or espeak-ng.
+        from nixorb.tts.tts_factory import create_tts
+        tts = create_tts(settings)
+        log.info("TTS: backend '%s'", getattr(tts, "name", settings.tts_backend))
+
+        from nixorb.tts.speaker import Speaker
+        speaker = Speaker(tts, streaming=settings.tts_streaming)
 
         # Confirmation dialog handler — must be registered *before* the executor
         # can emit its first ACTION_REQUESTED, or the request goes unanswered.
@@ -206,8 +235,9 @@ async def _async_main(settings, app) -> None:
         async def _ipc_status(_cmd: str) -> str:
             health = await llm.health_check()
             return (
-                f"ok: model={settings.llm_model} "
-                f"llm={'up' if health['ok'] else 'down'} "
+                f"ok: llm={settings.llm_backend}/{llm_model} "
+                f"{'up' if health['ok'] else 'down'} "
+                f"asr={asr.name} tts={getattr(tts, 'name', settings.tts_backend)} "
                 f"actions={'on' if executor else 'off'}"
             )
 
@@ -280,7 +310,8 @@ async def _async_main(settings, app) -> None:
             {"role": "system", "content": settings.llm_system_prompt}
         ]
 
-        async def _stream_with_tools(messages, tools, depth: int = 0) -> str:
+        async def _stream_with_tools(messages, tools, depth: int = 0,
+                                     on_text=None) -> str:
             """Stream one reply, dispatching plugin tool calls and retrying.
 
             Ollama returns tool calls instead of text; without this the model
@@ -289,6 +320,8 @@ async def _async_main(settings, app) -> None:
             chunks: list[str] = []
             async for chunk in llm.stream(messages, tools=tools):
                 chunks.append(chunk)
+                if on_text is not None:
+                    await on_text(chunk)
             text = "".join(chunks)
 
             calls = list(llm.last_tool_calls)
@@ -323,7 +356,7 @@ async def _async_main(settings, app) -> None:
                     {"role": "tool", "name": name, "content": result}
                 )
 
-            return await _stream_with_tools(messages, tools, depth + 1)
+            return await _stream_with_tools(messages, tools, depth + 1, on_text)
 
         async def _handle_turn(payload) -> None:
             """Handle a single conversation turn."""
@@ -336,14 +369,33 @@ async def _async_main(settings, app) -> None:
             await bus.emit(Event.ORB_LISTENING, source="main")
             log.info("🎙 Listening…")
 
-            # Record and transcribe
-            transcript = await asr.record_and_transcribe()
+            # Record and transcribe. Streaming backends (Nemotron) emit
+            # partials while you are still speaking; the rest return once.
+            supplied = (getattr(payload, "data", None) or {}).get("transcript")
+            if supplied:
+                transcript = supplied
+            elif settings.asr_streaming and asr.supports_streaming:
+                pieces: list[str] = []
+                async for piece in asr.stream_transcribe():
+                    pieces.append(piece)
+                    await bus.emit(
+                        Event.TRANSCRIPT_READY,
+                        data={"text": "".join(pieces), "partial": True},
+                        source="main",
+                    )
+                transcript = "".join(pieces).strip()
+            else:
+                transcript = (await asr.record_and_transcribe()) or ""
+
             if not transcript:
                 log.info("No speech detected")
                 await bus.emit(Event.ORB_IDLE, source="main")
                 return
 
-            log.info("📝 Transcript: %s", transcript)
+            log.info(
+                "📝 Transcript: %s%s",
+                transcript[:200], "…" if len(transcript) > 200 else "",
+            )
             await bus.emit(
                 Event.LOG,
                 data={"level": "info", "msg": f"🎙 You: {transcript}"},
@@ -400,12 +452,16 @@ async def _async_main(settings, app) -> None:
             # Unload Whisper to free VRAM for LLM
             await asr.unload()
             await bus.emit(Event.ORB_THINKING, source="main")
-            log.info("🤔 Querying LLM: %s", settings.llm_model)
+            log.info("🤔 Querying LLM: %s/%s", settings.llm_backend, llm_model)
 
-            # Stream LLM response, running any plugin tools it asks for.
+            # Stream the answer, speaking each sentence as it lands.
+            await bus.emit(Event.ORB_SPEAKING, source="main")
+            await speaker.start()
             try:
                 tools = plugin_loader.get_tool_definitions() or None
-                response = await _stream_with_tools(conversation, tools)
+                response = await _stream_with_tools(
+                    conversation, tools, on_text=speaker.feed
+                )
 
             except Exception as exc:
                 log.error("LLM error: %s", exc)
@@ -448,7 +504,9 @@ async def _async_main(settings, app) -> None:
                         {"role": "user", "content": f"<RESULT>\n{result_msg}\n</RESULT>"}
                     )
                     try:
-                        followup = await _stream_with_tools(conversation, tools)
+                        followup = await _stream_with_tools(
+                            conversation, tools, on_text=speaker.feed
+                        )
                         if followup:
                             conversation.append(
                                 {"role": "assistant", "content": followup}
@@ -465,22 +523,52 @@ async def _async_main(settings, app) -> None:
                     await write_clipboard(code_blocks[-1].strip())
                     log.debug("Copied code block to clipboard")
 
-            # Speak response
-            await bus.emit(Event.ORB_SPEAKING, source="main")
-            speech_text = _strip_actions(response)
-            # Limit to first 6 sentences for TTS
-            sentences = re.split(r"(?<=[.!?])\s+", speech_text)
-            tts_text = " ".join(sentences[:6]) if len(sentences) > 6 else speech_text
-
-            if tts_text:
-                log.info("🔊 Speaking: %s", tts_text[:80])
-                await tts.speak(tts_text)
+            # Finish speaking. With streaming on, most of this already came
+            # out of the speakers while the model was still generating.
+            if settings.tts_streaming:
+                await speaker.finish()
+            else:
+                speech_text = _strip_actions(response)
+                sentences = re.split(r"(?<=[.!?])\s+", speech_text)
+                limit = max(1, int(settings.tts_max_sentences))
+                tts_text = (
+                    " ".join(sentences[:limit])
+                    if len(sentences) > limit
+                    else speech_text
+                )
+                if tts_text:
+                    log.info("🔊 Speaking: %s", tts_text[:80])
+                    await speaker.say(tts_text)
 
             await bus.emit(Event.ORB_IDLE, source="main")
 
             # Trim conversation history
             if len(conversation) > 22:
                 conversation[1:] = conversation[-20:]
+
+        async def _listen_for_follow_up() -> str | None:
+            """Briefly listen again so you can just keep talking."""
+            if settings.follow_up_seconds <= 0 or mic_muted:
+                return None
+
+            log.info("👂 Listening for a follow-up (%.0fs)",
+                     settings.follow_up_seconds)
+            await bus.emit(Event.ORB_LISTENING, source="follow-up")
+            try:
+                heard = await asyncio.wait_for(
+                    asr.record_and_transcribe(),
+                    timeout=settings.follow_up_seconds + MAX_RECORDING_SECONDS,
+                )
+            except TimeoutError:
+                heard = None
+            except Exception as exc:
+                log.debug("Follow-up listen failed: %s", exc)
+                heard = None
+
+            if not heard:
+                await bus.emit(Event.ORB_IDLE, source="follow-up")
+                return None
+            return heard
 
         # ── Trigger wiring ───────────────────────────────────────────── #
         # A turn takes seconds to minutes. Bus handlers are awaited inline by the
@@ -496,7 +584,19 @@ async def _async_main(settings, app) -> None:
                 return
             async with turn_lock:
                 try:
-                    await _handle_turn(payload)
+                    current = payload
+                    for _ in range(MAX_FOLLOW_UPS + 1):
+                        await _handle_turn(current)
+                        heard = await _listen_for_follow_up()
+                        if not heard:
+                            break
+                        log.info("↩ Follow-up: %s", heard[:80])
+                        current = _FollowUp(heard)
+                    else:
+                        log.info(
+                            "Follow-up limit (%d) reached — press the hotkey "
+                            "to continue", MAX_FOLLOW_UPS,
+                        )
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
@@ -511,6 +611,11 @@ async def _async_main(settings, app) -> None:
                     await bus.emit(Event.ORB_IDLE, source="main")
 
         async def _on_trigger(payload) -> None:
+            # Barge-in: talking over the orb should stop it, the way you can
+            # cut off any assistant worth using — not queue behind it.
+            if settings.barge_in and speaker.speaking:
+                log.info("⏹ Barge-in — stopping playback")
+                await speaker.stop()
             _spawn(_run_turn(payload), "turn")
 
         bus.subscribe(Event.HOTKEY_TRIGGERED, _on_trigger, priority=2)
@@ -545,11 +650,12 @@ async def _async_main(settings, app) -> None:
 
         # ── Ready ────────────────────────────────────────────────────── #
         log.info(
-            "✅ NixOrb %s ready — hotkey: %s | LLM: %s | model: %s",
+            "✅ NixOrb %s ready — hotkey: %s | LLM: %s/%s | ASR: %s/%s | TTS: %s",
             __import__("nixorb").__version__,
             settings.hotkey,
-            settings.llm_backend,
-            settings.llm_model,
+            settings.llm_backend, llm_model,
+            asr.name, settings.asr_model,
+            getattr(tts, "name", settings.tts_backend),
         )
         await bus.emit(
             Event.LOG,
@@ -557,7 +663,7 @@ async def _async_main(settings, app) -> None:
                 "level": "success",
                 "msg": (
                     f"✅ NixOrb ready | hotkey: {settings.hotkey} "
-                    f"| LLM: {settings.llm_model}"
+                    f"| LLM: {llm_model} | ASR: {asr.name}"
                 ),
             },
             source="startup",
@@ -571,6 +677,12 @@ async def _async_main(settings, app) -> None:
 
         if wake_word is not None:
             wake_word.stop()
+
+        if speaker is not None:
+            # Its drain task outlives the turn otherwise, and asyncio
+            # complains that a pending task was destroyed.
+            with contextlib.suppress(Exception):
+                await speaker.stop()
 
         if ipc is not None:
             with contextlib.suppress(Exception):
