@@ -113,10 +113,6 @@ async def _async_main(settings, app) -> None:
     await bus.start()
     log.info("NixOrb %s starting", __import__("nixorb").__version__)
 
-    # Prime qasync cross-thread wakeup from Qt thread
-    # This prevents "QSocketNotifier: Can only be used with threads started with QThread"
-    asyncio.get_running_loop().call_soon_threadsafe(lambda: None)
-
     # Bound up front so the finally-block below can clean up whatever
     # startup managed to create before it failed.
     asr = None
@@ -671,6 +667,23 @@ def main() -> int:
     # qasync: integrate asyncio with the Qt event loop
     loop = qasync.QEventLoop(app)
     asyncio.set_event_loop(loop)
+
+    # qasync schedules every asyncio callback through one QObject
+    # (its internal `_SimpleTimer`) via QObject.startTimer(). That object is
+    # only usable from the thread that first calls startTimer() on it. If
+    # anything reaches it from another thread before this one does — a
+    # platform-theme/DBus integration thread some desktops (KDE Plasma
+    # included) spin up during QApplication startup, for instance — Qt
+    # refuses with "QObject::startTimer: Timers can only be used with
+    # threads started with QThread" (and the equivalent QSocketNotifier
+    # warning for any fd registered the same way), and every asyncio
+    # callback in the process silently stops firing from then on —
+    # including the ones needed to even start NixOrb's own startup
+    # coroutine, which is why nothing after this point would otherwise log
+    # anything at all. Running one trivial coroutine to completion here,
+    # before anything else touches Qt or asyncio, claims that first call
+    # for this thread while the loop is still idle.
+    loop.run_until_complete(asyncio.sleep(0))
 
     # Qt swallows SIGINT, so Ctrl-C would otherwise do nothing at all.
     def _handle_signal(signum, _frame) -> None:
