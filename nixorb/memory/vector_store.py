@@ -11,6 +11,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from nixorb.compat import restore_typing_bytestring
+
 log = logging.getLogger(__name__)
 
 
@@ -31,6 +33,10 @@ class VectorMemory:
     def _init_chroma(self) -> None:
         """Initialize ChromaDB client."""
         try:
+            # Must happen before chromadb is imported: it reaches `overrides`,
+            # which reads a name Python 3.14 removed. See nixorb/compat.py.
+            restore_typing_bytestring()
+
             import chromadb
             from chromadb.config import Settings as ChromaSettings
 

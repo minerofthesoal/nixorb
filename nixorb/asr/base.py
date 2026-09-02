@@ -8,6 +8,7 @@ same way from the orb's point of view.
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
@@ -156,6 +157,75 @@ def record_with_vad(
     return audio
 
 
+# faster-whisper model names that can be given directly; anything else is a
+# repo id, and a Nemotron or Wav2Vec2 repo id means nothing to CTranslate2.
+WHISPER_SIZES = frozenset({
+    "tiny", "tiny.en", "base", "base.en", "small", "small.en",
+    "medium", "medium.en", "large", "large-v1", "large-v2", "large-v3",
+    "large-v3-turbo", "turbo", "distil-small.en", "distil-medium.en",
+    "distil-large-v2", "distil-large-v3",
+})
+# Small enough to fetch and run on a CPU while the real backend is broken.
+FALLBACK_WHISPER_MODEL = "base"
+
+
+def whisper_fallback_settings(settings: Any) -> Any:
+    """Settings for a stand-in faster-whisper engine.
+
+    `asr_model` usually names a model the fallback cannot load — the default
+    is a Nemotron repo id — so point it at a Whisper size unless it already
+    is one. The original settings object is never mutated.
+    """
+    model = str(getattr(settings, "asr_model", "") or "").strip()
+    if model in WHISPER_SIZES:
+        return settings
+
+    copier = getattr(settings, "model_copy", None)
+    if callable(copier):
+        try:
+            return copier(update={"asr_model": FALLBACK_WHISPER_MODEL})
+        except Exception:
+            pass
+
+    try:
+        clone = copy.copy(settings)
+        clone.asr_model = FALLBACK_WHISPER_MODEL
+        return clone
+    except Exception:
+        return settings
+
+
+def build_whisper_fallback(
+    settings: Any, engine_name: str, exc: Exception
+) -> Any | None:
+    """Stand faster-whisper up in place of a backend that cannot load.
+
+    A backend that fails in `_load` fails identically on every trigger, so
+    without this the assistant is deaf for the rest of the session and each
+    turn dies with the same unreadable error. faster-whisper is a base
+    dependency running on CTranslate2 — no torch, no torchaudio — so it
+    survives the installs the other two die on.
+
+    Returns None when there is nothing better to run, which tells the
+    caller to re-raise.
+    """
+    from nixorb.hf import describe_native_import_error
+
+    advice = describe_native_import_error(exc)
+    log.error(
+        "ASR: %s could not load (%s) — falling back to faster-whisper. %s",
+        engine_name, exc, advice or "",
+    )
+
+    try:
+        from nixorb.asr.whisper_engine import WhisperEngine
+
+        return WhisperEngine(whisper_fallback_settings(settings))
+    except Exception as build_exc:
+        log.error("ASR: faster-whisper is unavailable too: %s", build_exc)
+        return None
+
+
 class ASREngine(ABC):
     """Base class for speech-to-text backends."""
 
@@ -163,6 +233,11 @@ class ASREngine(ABC):
     name: str = "asr"
     #: Whether stream_transcribe() does anything other than fall back.
     supports_streaming: bool = False
+    #: Whether faster-whisper may stand in when this backend cannot load.
+    #: True for the torch-backed engines: faster-whisper is a base
+    #: dependency and runs on CTranslate2, so it survives a torch install
+    #: that the others die on.
+    whisper_fallback: bool = False
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -170,6 +245,8 @@ class ASREngine(ABC):
         self._mic_index = getattr(settings, "microphone_index", None)
         self._mic_name = getattr(settings, "microphone_name", "") or ""
         self._recording = False
+        #: Set when this engine failed to load and another took over.
+        self._delegate: ASREngine | None = None
 
     # ── Backend hooks ────────────────────────────────────────────── #
 
@@ -192,16 +269,51 @@ class ASREngine(ABC):
 
     @property
     def is_loaded(self) -> bool:
+        if self._delegate is not None:
+            return self._delegate.is_loaded
         return self._model is not None
+
+    @property
+    def active_name(self) -> str:
+        """The engine actually doing the work — not always this one."""
+        if self._delegate is not None:
+            return self._delegate.active_name
+        return self.name
 
     async def preload(self) -> None:
         """Load the model into memory, off the event loop."""
-        if self._model is not None:
+        if self._delegate is not None or self._model is not None:
             return
-        self._model = await asyncio.to_thread(self._load)
+        try:
+            self._model = await asyncio.to_thread(self._load)
+        except Exception as exc:
+            delegate = self._build_fallback(exc)
+            if delegate is None:
+                raise
+            self._delegate = delegate
+            try:
+                # Emits ASR_READY for the engine that actually loaded.
+                await delegate.preload()
+            except Exception as fallback_exc:
+                self._delegate = None
+                log.error(
+                    "ASR: faster-whisper could not stand in either: %s",
+                    fallback_exc,
+                )
+                raise exc from fallback_exc
+            return
         await bus.emit(Event.ASR_READY, data={"engine": self.name}, source=self.name)
 
+    def _build_fallback(self, exc: Exception) -> ASREngine | None:
+        if not self.whisper_fallback:
+            return None
+        return build_whisper_fallback(self._settings, self.name, exc)
+
     async def unload(self) -> None:
+        if self._delegate is not None:
+            delegate, self._delegate = self._delegate, None
+            await delegate.unload()
+            return
         if self._model is None:
             return
         model, self._model = self._model, None
@@ -210,13 +322,17 @@ class ASREngine(ABC):
 
     def stop_recording(self) -> None:
         self._recording = False
+        if self._delegate is not None:
+            self._delegate.stop_recording()
 
     # ── Pipeline ─────────────────────────────────────────────────── #
 
     async def record_and_transcribe(self) -> str | None:
         """Record until silence, then transcribe. The orb's main entry point."""
-        if self._model is None:
+        if self._delegate is None and self._model is None:
             await self.preload()
+        if self._delegate is not None:
+            return await self._delegate.record_and_transcribe()
 
         await bus.emit(Event.RECORDING_START, source=self.name)
         self._recording = True
@@ -261,6 +377,13 @@ class ASREngine(ABC):
         Backends that cannot stream fall back to one final result, so callers
         never need to branch on supports_streaming.
         """
+        if self._delegate is None and self._model is None:
+            await self.preload()
+        if self._delegate is not None:
+            async for partial in self._delegate.stream_transcribe():
+                yield partial
+            return
+
         text = await self.record_and_transcribe()
         if text:
             yield text

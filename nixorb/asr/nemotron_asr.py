@@ -166,6 +166,7 @@ class NemotronASREngine(ASREngine):
 
     name = "nemotron"
     supports_streaming = True
+    whisper_fallback = True
 
     def __init__(self, settings: Settings) -> None:
         super().__init__(settings)
@@ -306,10 +307,13 @@ class NemotronASREngine(ASREngine):
 
     async def stream_transcribe(self) -> AsyncIterator[str]:
         """Yield partial transcripts while the user is still speaking."""
-        if self._model is None:
+        if self._delegate is None and self._model is None:
             await self.preload()
 
-        if self._via_pipeline or not self._streaming_supported():
+        # A delegate means loading failed and something else is listening;
+        # the base class knows how to hand off to it.
+        if self._delegate is not None or self._via_pipeline \
+                or not self._streaming_supported():
             async for text in super().stream_transcribe():
                 yield text
             return

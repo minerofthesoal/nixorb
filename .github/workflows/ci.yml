@@ -13,7 +13,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12"]
+        # The floor from pyproject's requires-python, and the ceiling we
+        # claim to support. 3.14 removed typing.ByteString, which the
+        # ChromaDB dependency chain still reads — see nixorb/compat.py.
+        python-version: ["3.12", "3.13", "3.14"]
 
     steps:
       - uses: actions/checkout@v4
@@ -37,12 +40,20 @@ jobs:
         run: |
           pip install --upgrade pip
 
+          # torch 2.7.1 ships no cp314 wheels — 3.14 support starts much
+          # later — so pin it only where it exists and let pip resolve on
+          # 3.14 rather than failing the job on a missing build.
+          TORCH="torch==2.7.1+cpu torchaudio==2.7.1+cpu"
+          if [ "${{ matrix.python-version }}" = "3.14" ]; then
+            TORCH="torch torchaudio"
+          fi
+
           # download.pytorch.org (and its CDN redirect, download-r2.pytorch.org)
           # has long-standing, well-documented intermittent TLS/connection
           # failures unrelated to this project — retry with backoff instead
           # of failing the whole job on a transient blip.
           for attempt in 1 2 3 4 5; do
-            if pip install torch==2.7.1+cpu torchaudio==2.7.1+cpu \
+            if pip install $TORCH \
                  --index-url https://download.pytorch.org/whl/cpu; then
               break
             fi

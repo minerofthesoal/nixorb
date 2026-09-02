@@ -125,15 +125,32 @@ fi
 
 source "$VENV_DIR/bin/activate"
 
-# Install PyTorch with CUDA if NVIDIA GPU detected
-if [ "$HAS_NVIDIA" = true ]; then
-    echo -e "${BLUE}→ Installing PyTorch with CUDA 11.8…${NC}"
-    pip install torch==2.7.1+cu118 torchaudio==2.7.1+cu118 \
-        --index-url https://download.pytorch.org/whl/cu118
+# torch and torchaudio ALWAYS come from one index. Mixing them — a CUDA
+# torchaudio beside a CPU torch, say — installs cleanly and then fails at
+# the dynamic linker the first time a model loads, with a message naming
+# only a missing .so ("libcudart.so.12: cannot open shared object file")
+# and nothing about torch. Note the CPU branch pins the CPU index too:
+# a bare `pip install torch` on Linux pulls the CUDA build.
+#
+# The cu118 pin is this project's GTX 1080 target, but those wheels stop at
+# cp313 — torch 2.7.1 has no 3.14 build — so newer interpreters take the
+# current CUDA 12.8 release instead of failing here and leaving the user to
+# install torch by hand, which is how the halves come to disagree.
+PY_MINOR=$(python -c 'import sys; print(sys.version_info[1])')
+
+if [ "$HAS_NVIDIA" = true ] && [ "$PY_MINOR" -le 13 ]; then
+    TORCH_INDEX="https://download.pytorch.org/whl/cu118"
+    TORCH_SPEC="torch==2.7.1+cu118 torchaudio==2.7.1+cu118"
+elif [ "$HAS_NVIDIA" = true ]; then
+    TORCH_INDEX="https://download.pytorch.org/whl/cu128"
+    TORCH_SPEC="torch torchaudio"
 else
-    echo -e "${BLUE}→ Installing PyTorch (CPU-only)…${NC}"
-    pip install torch torchaudio
+    TORCH_INDEX="https://download.pytorch.org/whl/cpu"
+    TORCH_SPEC="torch torchaudio"
 fi
+
+echo -e "${BLUE}→ Installing PyTorch from ${TORCH_INDEX}…${NC}"
+pip install $TORCH_SPEC --index-url "$TORCH_INDEX"
 
 # llama-cpp-python compiles from source by default (several minutes). The
 # model this project ships with is tiny (~1.3 GB Q4_K_M GGUF), so CPU
