@@ -269,6 +269,17 @@ def problems() -> list[str]:
     return lines
 
 
+def _package_directory(leftovers: Sequence[str], package: str) -> str:
+    """The installed package's directory, from the files found inside it."""
+    from pathlib import Path
+
+    for path in leftovers:
+        for parent in Path(path).parents:
+            if parent.name == package:
+                return str(parent)
+    return f"<site-packages>/{package}"
+
+
 def torch_report() -> list[str]:
     """Whether torch and torchaudio import, and which CUDA build they are.
 
@@ -279,22 +290,40 @@ def torch_report() -> list[str]:
     nothing else. torch is deliberately not a declared dependency — no one
     build is right for every machine — so absence is a note, not a failure.
     """
-    from nixorb.hf import describe_native_import_error
+    from nixorb.hf import describe_native_import_error, duplicate_extensions
 
     lines: list[str] = []
     for name in ("torch", "torchaudio"):
         try:
             module = __import__(name)
-        except ImportError as exc:
+        except BaseException as exc:
+            # A half-installed native package raises whatever it likes —
+            # ImportError, OSError, RuntimeError — so classify on the
+            # message, not the type.
             advice = describe_native_import_error(exc)
-            if advice is None:
-                lines.append(f"  ⚠️  {name} is not installed")
+            leftovers = duplicate_extensions(name)
+
+            if advice is None and not leftovers:
+                if isinstance(exc, ImportError) and "No module named" in str(exc):
+                    lines.append(f"  ⚠️  {name} is not installed")
+                else:
+                    lines.append(f"  ❌ {name} will not import: {exc}")
                 continue
+
             lines.append(f"  ❌ {name} is installed but will not import: {exc}")
-            lines.extend(f"       {line}" for line in advice.splitlines())
-            continue
-        except Exception as exc:  # a broken build can raise almost anything
-            lines.append(f"  ❌ {name} failed to import: {exc}")
+            if leftovers:
+                lines.append(
+                    f"       {len(leftovers)} extension files where there "
+                    "should be one — the loader cannot choose:"
+                )
+                lines.extend(f"         {path}" for path in leftovers)
+            if advice:
+                # We know where the package is, so say so rather than
+                # making the reader work out what <site-packages> means.
+                advice = advice.replace(
+                    "<site-packages>/" + name, _package_directory(leftovers, name)
+                )
+                lines.extend(f"       {line}" for line in advice.splitlines())
             continue
 
         version = getattr(module, "__version__", "?")

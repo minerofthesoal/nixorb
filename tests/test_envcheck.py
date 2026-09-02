@@ -308,3 +308,79 @@ class TestTorchReport:
         text = "\n".join(torch_report())
         assert text.count("(CPU)") == 2
         assert "❌" not in text
+
+
+class TestTorchReportLeftovers:
+    """The second field report: an OSError, not an ImportError.
+
+    Classifying on the exception type printed the raw loader message with
+    no advice at all, which is what `nixorb check` did the first time
+    someone hit it.
+    """
+
+    def _broken(self, monkeypatch, exc):
+        import builtins
+
+        real_import = builtins.__import__
+
+        class _Torch:
+            __version__ = "2.14.0+cpu"
+
+            class version:
+                cuda = None
+
+        def half_broken(name, *args, **kwargs):
+            if name == "torch":
+                return _Torch
+            if name == "torchaudio":
+                raise exc
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", half_broken)
+
+    def test_an_oserror_still_gets_advice(self, monkeypatch):
+        self._broken(
+            monkeypatch,
+            OSError("Could not load this library: /x/torchaudio/lib/_torchaudio.so"),
+        )
+        monkeypatch.setattr("nixorb.hf.duplicate_extensions", lambda name="": [])
+        text = "\n".join(torch_report())
+        assert "torch 2.14.0+cpu (CPU)" in text
+        assert "rm -rf" in text
+        assert "optional" in text
+
+    def test_leftover_files_are_listed_with_the_directory_to_delete(
+        self, monkeypatch, tmp_path
+    ):
+        lib = tmp_path / "torchaudio" / "lib"
+        lib.mkdir(parents=True)
+        (lib / "_torchaudio.so").touch()
+        (lib / "_torchaudio.abi3.so").touch()
+
+        import importlib.util
+
+        class _Spec:
+            submodule_search_locations = [str(tmp_path / "torchaudio")]
+
+        monkeypatch.setattr(
+            importlib.util,
+            "find_spec",
+            lambda name: _Spec() if name == "torchaudio" else None,
+        )
+        self._broken(
+            monkeypatch,
+            OSError("Could not load this library: /x/torchaudio/lib/_torchaudio.so"),
+        )
+        text = "\n".join(torch_report())
+        assert "2 extension files where there should be one" in text
+        assert "_torchaudio.abi3.so" in text
+        # The command must name the real directory, not a placeholder.
+        assert f"rm -rf {tmp_path / 'torchaudio'}" in text
+        assert "<site-packages>" not in text
+
+    def test_a_plain_missing_module_stays_a_note(self, monkeypatch):
+        self._broken(monkeypatch, ImportError("No module named 'torchaudio'"))
+        monkeypatch.setattr("nixorb.hf.duplicate_extensions", lambda name="": [])
+        text = "\n".join(torch_report())
+        assert "torchaudio is not installed" in text
+        assert "❌" not in text.split("torchaudio")[-1]

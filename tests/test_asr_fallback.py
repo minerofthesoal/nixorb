@@ -20,10 +20,14 @@ from nixorb.asr.base import (
     build_whisper_fallback,
     whisper_fallback_settings,
 )
-from nixorb.hf import describe_native_import_error
+from nixorb.hf import describe_native_import_error, duplicate_extensions
 from nixorb.settings import Settings
 
 LIBCUDART = "libcudart.so.12: cannot open shared object file: No such file or directory"
+LEFTOVER = (
+    "Could not load this library: "
+    "/home/u/.local/lib/python3.14/site-packages/torchaudio/lib/_torchaudio.so"
+)
 
 
 class TestDescribeNativeImportError:
@@ -53,6 +57,78 @@ class TestDescribeNativeImportError:
         # Guessing "reinstall torch" at an unrelated error sends people the
         # wrong way, so it must return None rather than a plausible story.
         assert describe_native_import_error(exc) is None
+
+    def test_leftover_extensions_get_the_other_fix(self):
+        # This one is NOT a build mismatch, and --force-reinstall does not
+        # clear it, so telling people to reinstall wastes their time.
+        advice = describe_native_import_error(OSError(LEFTOVER))
+        assert advice is not None
+        assert "--force-reinstall does not clear it" in advice
+        assert "rm -rf" in advice
+        assert "pip uninstall -y torchaudio" in advice
+
+    def test_leftovers_are_not_diagnosed_as_a_mismatch(self):
+        advice = describe_native_import_error(OSError(LEFTOVER))
+        assert "came from different builds" not in advice
+
+    def test_it_says_torchaudio_can_simply_go(self):
+        # transformers guards the import on find_spec, so an absent
+        # torchaudio is skipped entirely, and NixOrb never calls it.
+        advice = describe_native_import_error(OSError(LEFTOVER))
+        assert "optional" in advice
+
+    def test_the_torchaudio_loader_warning_counts_too(self):
+        advice = describe_native_import_error(
+            RuntimeError("Expected a single file path to _torchaudio, got paths=[...]")
+        )
+        assert advice is not None
+        assert "rm -rf" in advice
+
+
+class TestDuplicateExtensions:
+    def test_reports_two_extensions_left_in_one_directory(self, tmp_path, monkeypatch):
+        lib = tmp_path / "torchaudio" / "lib"
+        lib.mkdir(parents=True)
+        (lib / "_torchaudio.so").touch()
+        (lib / "_torchaudio.abi3.so").touch()
+
+        import importlib.util
+
+        class _Spec:
+            submodule_search_locations = [str(tmp_path / "torchaudio")]
+
+        monkeypatch.setattr(importlib.util, "find_spec", lambda name: _Spec())
+        found = duplicate_extensions("torchaudio")
+        assert len(found) == 2
+        assert any(path.endswith("_torchaudio.abi3.so") for path in found)
+
+    def test_a_single_extension_is_not_a_problem(self, tmp_path, monkeypatch):
+        lib = tmp_path / "torchaudio" / "lib"
+        lib.mkdir(parents=True)
+        (lib / "_torchaudio.abi3.so").touch()
+
+        import importlib.util
+
+        class _Spec:
+            submodule_search_locations = [str(tmp_path / "torchaudio")]
+
+        monkeypatch.setattr(importlib.util, "find_spec", lambda name: _Spec())
+        assert duplicate_extensions("torchaudio") == []
+
+    def test_absent_package_is_not_a_problem(self, monkeypatch):
+        import importlib.util
+
+        monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+        assert duplicate_extensions("torchaudio") == []
+
+    def test_a_find_spec_that_raises_is_not_fatal(self, monkeypatch):
+        import importlib.util
+
+        def boom(name):
+            raise ValueError("broken metadata")
+
+        monkeypatch.setattr(importlib.util, "find_spec", boom)
+        assert duplicate_extensions("torchaudio") == []
 
 
 class TestWhisperFallbackSettings:
@@ -239,7 +315,7 @@ class TestHFEngineStreaming:
 class TestTheRealNemotronEngine:
     """The engine that actually failed, wired the way the orb wires it."""
 
-    def _engine(self, monkeypatch):
+    def _engine(self, monkeypatch, exc=None):
         transformers = pytest.importorskip("transformers")
         if not hasattr(transformers, "AutoModelForRNNT"):
             pytest.skip("transformers is too old for the native backend")
@@ -249,8 +325,10 @@ class TestTheRealNemotronEngine:
         # The failure the user hit: transformers>=5 imports torchaudio from
         # audio_utils at module scope, so AutoProcessor raises the linker
         # error before a single sample is read.
+        failure = exc if exc is not None else ImportError(LIBCUDART)
+
         def explode(*args, **kwargs):
-            raise ImportError(LIBCUDART)
+            raise failure
 
         monkeypatch.setattr(
             transformers.AutoProcessor, "from_pretrained", explode
@@ -266,6 +344,15 @@ class TestTheRealNemotronEngine:
         # Before: this raised out of preload() and main logged "Turn failed".
         assert await engine.record_and_transcribe() == "heard by the stand-in"
         assert engine.active_name == "faster-whisper"
+
+    async def test_an_oserror_from_the_loader_is_caught_too(
+        self, monkeypatch, stub
+    ):
+        # The second report from the field raised OSError, not ImportError:
+        # "Could not load this library: .../_torchaudio.so". Classifying on
+        # the exception type would have let this one through.
+        engine = self._engine(monkeypatch, exc=OSError(LEFTOVER))
+        assert await engine.record_and_transcribe() == "heard by the stand-in"
 
     async def test_streaming_survives_it_too(self, monkeypatch, stub):
         engine = self._engine(monkeypatch)

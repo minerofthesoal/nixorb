@@ -20,12 +20,28 @@ class MissingDependency(RuntimeError):
     """A backend was selected whose Python package is not installed."""
 
 
-# A torch stack whose pieces come from different builds fails at the dynamic
-# linker, not in Python, so the message names a .so nobody recognises and
-# nothing about torch. transformers>=5 imports torchaudio from
-# `audio_utils` at module scope, so a broken torchaudio takes down
-# AutoProcessor.from_pretrained — and with it the whole turn.
-_NATIVE_MARKERS = (
+# A torch stack that will not load fails at the dynamic linker, not in
+# Python, so the message names a .so nobody recognises and nothing about
+# torch. transformers>=5 imports torchaudio from `audio_utils` when the
+# package merely *exists* on disk — `is_torchaudio_available()` is a
+# find_spec, never a real import — so a torchaudio that cannot load takes
+# down AutoProcessor.from_pretrained, and with it the whole turn.
+#
+# Two shapes, two different fixes, and giving the wrong one wastes a
+# reinstall:
+#
+#   mismatch — the halves came from different builds. The loader finds the
+#   file and it demands something absent: "libcudart.so.12: cannot open
+#   shared object file", "undefined symbol: ...". Reinstalling both from
+#   one index fixes it.
+#
+#   leftovers — an earlier install's extension is still in the directory.
+#   torchaudio renamed its extension to an abi3 suffix, so the new
+#   release's RECORD does not list the old `_torchaudio.so` and pip never
+#   deletes it; the loader then finds two candidates where it wants one and
+#   gives up with "Could not load this library: …". --force-reinstall does
+#   NOT fix this. The directory has to go.
+_MISMATCH_MARKERS = (
     "cannot open shared object file",
     "undefined symbol",
     "libcudart",
@@ -35,31 +51,99 @@ _NATIVE_MARKERS = (
     "libc10",
 )
 
-_SHARED_OBJECT = re.compile(r"(lib[\w.+-]*\.so[\w.]*)")
+_LEFTOVER_MARKERS = (
+    "could not load this library",
+    "expected a single file path",
+)
+
+_SHARED_OBJECT = re.compile(r"([\w./+-]*\.so[\w.]*)")
+
+_PURGE_ADVICE = (
+    "  pip uninstall -y torchaudio\n"
+    "  rm -rf <site-packages>/torchaudio\n"
+    "  pip install torchaudio --index-url https://download.pytorch.org/whl/cpu"
+)
+
+# Worth saying out loud: nothing in NixOrb imports torchaudio, and
+# transformers skips it when the package is absent. Uninstalling it and
+# stopping there is a complete fix, not a workaround.
+_OPTIONAL_NOTE = (
+    "torchaudio is optional here — NixOrb never calls it, and transformers "
+    "skips it when it is not installed. `pip uninstall -y torchaudio` is a "
+    "complete fix on its own if you do not need it elsewhere."
+)
 
 
 def describe_native_import_error(exc: BaseException) -> str | None:
     """Explain a torch/torchaudio native-library failure, or return None.
 
     None means this is not one — the caller should report the original
-    error rather than guess.
+    error rather than invent a plausible story about torch.
     """
     text = str(exc)
-    if not any(marker in text.lower() for marker in _NATIVE_MARKERS):
-        return None
+    lowered = text.lower()
 
     match = _SHARED_OBJECT.search(text)
-    missing = f" ({match.group(1)} is missing)" if match else ""
-    return (
-        f"torch/torchaudio cannot load its native libraries{missing}. That "
-        "means the two came from different builds — a CUDA torchaudio beside "
-        "a CPU or differently-versioned torch. Reinstall both together from "
-        "one index:\n"
-        "  pip install --force-reinstall torch torchaudio "
-        "--index-url https://download.pytorch.org/whl/cpu\n"
-        "or the CUDA build matching your driver (…/whl/cu126, …/whl/cu128). "
-        "`nixorb check` reports which one you have."
-    )
+    library = match.group(1) if match else ""
+
+    if any(marker in lowered for marker in _LEFTOVER_MARKERS):
+        named = f" ({library})" if library else ""
+        return (
+            f"torchaudio's compiled extension will not load{named}. Usually "
+            "an earlier install left its own extension behind: the loader "
+            "finds two and refuses to choose. --force-reinstall does not "
+            "clear it, because pip only removes what the current release's "
+            "RECORD lists. Delete the directory and install again:\n"
+            f"{_PURGE_ADVICE}\n"
+            f"{_OPTIONAL_NOTE}"
+        )
+
+    if any(marker in lowered for marker in _MISMATCH_MARKERS):
+        missing = f" ({library} is missing)" if library else ""
+        return (
+            f"torch/torchaudio cannot load its native libraries{missing}. "
+            "That means the two came from different builds — a CUDA "
+            "torchaudio beside a CPU or differently-versioned torch. "
+            "Reinstall both together from one index:\n"
+            "  pip install --force-reinstall torch torchaudio "
+            "--index-url https://download.pytorch.org/whl/cpu\n"
+            "or the CUDA build matching your driver (…/whl/cu126, "
+            "…/whl/cu128). `nixorb check` reports which one you have."
+        )
+
+    return None
+
+
+def duplicate_extensions(package: str = "torchaudio") -> list[str]:
+    """Extension files an earlier install of `package` left behind.
+
+    Returns [] unless there is more than one — a single extension is the
+    normal case, and reporting it as a problem would send people chasing
+    nothing. Locating the package uses find_spec, which does not run its
+    __init__, so this still works when importing it is what fails.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    try:
+        spec = importlib.util.find_spec(package)
+    except Exception:
+        return []
+    if spec is None or not spec.submodule_search_locations:
+        return []
+
+    found: list[str] = []
+    stem = f"_{package}"
+    for location in spec.submodule_search_locations:
+        for directory in (Path(location) / "lib", Path(location)):
+            try:
+                found.extend(
+                    str(path) for path in sorted(directory.glob(f"{stem}*.so"))
+                )
+            except OSError:
+                continue
+
+    return found if len(found) > 1 else []
 
 
 def require(module: str, extra: str = "hf") -> Any:

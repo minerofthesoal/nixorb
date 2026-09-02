@@ -1,3 +1,46 @@
+## [2.0.8] — 2026-09-02
+
+Follow-up to 2.0.7 from a second report in the field. The fallback worked;
+the diagnosis around it did not.
+
+### Fixed
+
+- **`nixorb check` classified torch failures by exception type.** A
+  torchaudio whose extension will not load raises `OSError`, not
+  `ImportError`, so it fell through to the bare-message branch and printed
+
+  ```
+  ❌ torchaudio failed to import: Could not load this library: …/_torchaudio.so
+  ```
+
+  with no advice at all — the one case the probe existed for. It now
+  classifies on the message, since a half-installed native package raises
+  whatever it likes.
+- **The advice was wrong for that failure anyway.** It is not a build
+  mismatch, so `--force-reinstall` does not fix it: torchaudio renamed its
+  extension to an abi3 suffix, the new release's RECORD does not list the
+  old `_torchaudio.so`, pip never deletes it, and the loader finds two
+  candidates where it wants one. `nixorb check` now recognises that shape,
+  lists the leftover files with the directory to delete, and says the
+  right thing:
+
+  ```
+  ❌ torchaudio is installed but will not import: Could not load this library: …
+       2 extension files where there should be one — the loader cannot choose:
+         …/torchaudio/lib/_torchaudio.abi3.so
+         …/torchaudio/lib/_torchaudio.so
+       --force-reinstall does not clear it… Delete the directory and install again:
+         pip uninstall -y torchaudio
+         rm -rf /home/…/site-packages/torchaudio
+  ```
+
+- It also now says the simplest thing: **torchaudio can just go.** Nothing
+  in NixOrb calls it, and transformers guards its import on
+  `is_torchaudio_available()`, which is a `find_spec` — it checks the
+  package exists on disk, never that it loads. So an installed-but-broken
+  torchaudio passes the guard and then explodes, while an absent one is
+  skipped entirely. `pip uninstall -y torchaudio` is a complete fix.
+
 ## [2.0.7] — 2026-09-02
 
 A torch install whose halves came from different builds made every turn
