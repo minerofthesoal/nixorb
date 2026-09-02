@@ -322,7 +322,7 @@ jobs:
           mkdir -p wheels
           pip download -d wheels \
             faster-whisper openai chromadb aiohttp qasync \
-            "pydantic>=2.7" pydantic-settings tomli-w "typer[all]" \
+            "pydantic>=2.7" pydantic-settings tomli-w typer \
             rich pygments openwakeword huggingface-hub cryptography \
             aiofiles sounddevice soundfile numpy pynput hypernix \
             2>/dev/null || true

@@ -207,9 +207,11 @@ class NemotronASREngine(ASREngine):
                 want, getattr(transformers, "__version__", "unknown"), want,
             )
             self._via_pipeline = True
-            from nixorb.asr.hf_asr import HFASREngine
+            from nixorb.asr.hf_asr_engine import HFASREngine
 
-            return HFASREngine(self._settings)._load()
+            delegate = HFASREngine(self._settings)
+            delegate._pipe = delegate._load_pipeline()
+            return delegate
 
         log.info(
             "ASR: loading Nemotron %s on %s (lookahead=%d, ~%dms)",
@@ -270,11 +272,9 @@ class NemotronASREngine(ASREngine):
             raise RuntimeError("ASR model not loaded")
 
         if self._via_pipeline:
-            from nixorb.asr.hf_asr import _extract_text
-
-            return _extract_text(
-                self._model({"raw": np.asarray(audio, dtype=np.float32),
-                             "sampling_rate": SAMPLE_RATE})
+            # self._model is an HFASREngine standing in for us.
+            return self._model._transcribe_array(
+                np.asarray(audio, dtype=np.float32)
             )
 
         model = self._model["model"]
@@ -349,7 +349,9 @@ class NemotronASREngine(ASREngine):
                 log.info("ASR: streaming produced no speech")
 
     def _streaming_supported(self) -> bool:
-        processor = (self._model or {}).get("processor")
+        if not isinstance(self._model, dict):
+            return False
+        processor = self._model.get("processor")
         return all(
             hasattr(processor, attr)
             for attr in (

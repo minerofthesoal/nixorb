@@ -9,6 +9,7 @@ Usage:
     nixorb tts "text"         Speak text
     nixorb status             Show system status
     nixorb config             Open config in editor
+    nixorb config --gui       Open the graphical settings window
     nixorb check              Check dependencies
     nixorb version            Show version
 """
@@ -196,7 +197,7 @@ def status() -> None:
     typer.echo("\n🔊 Speech synthesis:")
     typer.echo(f"  Backend: {settings.tts_backend}")
     if settings.tts_backend == "huggingface":
-        typer.echo(f"  Model: {settings.tts_hf_model}")
+        typer.echo(f"  Model: {settings.tts_hf_repo}")
     else:
         typer.echo(f"  Voice: {settings.tts_voice}")
 
@@ -232,12 +233,28 @@ def status() -> None:
 
 
 @app.command()
-def config() -> None:
-    """Open NixOrb configuration in default editor."""
+def config(
+    gui: bool = typer.Option(
+        False, "--gui", "-g", help="Open the graphical settings window instead of a text editor."
+    ),
+) -> None:
+    """Open NixOrb configuration in default editor (or --gui for a graphical dialog)."""
     config_path = Path.home() / ".config" / "nixorb" / "config.toml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     if not config_path.exists():
         Settings().save()
+
+    if gui:
+        from PySide6.QtWidgets import QApplication
+
+        from nixorb.settings import Settings as _Settings
+        from nixorb.ui.settings_window import SettingsWindow
+
+        # Held for the duration of .exec() — required to keep the QApplication alive.
+        _app = QApplication.instance() or QApplication([])
+        window = SettingsWindow(_Settings.load())
+        window.exec()
+        return
 
     editor = shutil.which("nano") or shutil.which("vim") or shutil.which("vi")
     if editor:

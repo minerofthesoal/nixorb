@@ -34,3 +34,11 @@ pynput>=1.7.6
 
 # Optional: wake word detection
 # openwakeword>=0.6.0
+
+# Optional: HuggingFace LLM/ASR/TTS backends (any custom HF model) —
+#   pip install transformers accelerate huggingface_hub
+# Optional: GGUF LLMs via llama.cpp —
+#   pip install llama-cpp-python
+# Optional: any OpenAI-compatible endpoint (OpenAI, vLLM, TGI, LM Studio) —
+#   pip install openai
+# Or, equivalently: pip install '.[huggingface,llama_cpp,openai]'

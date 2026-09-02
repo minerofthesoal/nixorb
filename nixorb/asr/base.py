@@ -27,10 +27,33 @@ SAMPLE_RATE = 16000
 CHANNELS = 1
 DTYPE = np.float32
 CHUNK_DURATION = 0.5  # seconds per captured block
-SILENCE_THRESHOLD = 0.015  # RMS below this counts as silence
+# RMS below this counts as silence, at the default mic_sensitivity of 0.5.
+SILENCE_THRESHOLD = 0.015
+# Ends of the sensitivity dial: 1.0 triggers on quiet/distant speech, 0.0
+# needs a loud, close voice.
+MIN_SILENCE_THRESHOLD = 0.004
+MAX_SILENCE_THRESHOLD = 0.045
 SILENCE_TIMEOUT = 2.0  # seconds of silence after speech before stopping
 MAX_RECORDING_DURATION = 30.0
+# Spend the first fraction of a second measuring the room rather than
+# listening: a noisy room otherwise trips the VAD on its own hum and records
+# thirty seconds of nothing.
+CALIBRATION_SECONDS = 0.3
 MIN_SPEECH_SECONDS = 0.3  # anything shorter is a click, not a sentence
+
+
+def sensitivity_to_threshold(sensitivity: object) -> float:
+    """Map a 0..1 mic_sensitivity onto a VAD RMS threshold.
+
+    Higher sensitivity must *lower* the threshold. Defensive about the value
+    not being a plain float (an unconfigured test mock, say) — falls back to
+    the default rather than raising out of a constructor.
+    """
+    try:
+        s = max(0.0, min(1.0, float(sensitivity)))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return SILENCE_THRESHOLD
+    return MAX_SILENCE_THRESHOLD + s * (MIN_SILENCE_THRESHOLD - MAX_SILENCE_THRESHOLD)
 
 
 def record_with_vad(
@@ -39,12 +62,24 @@ def record_with_vad(
     max_seconds: float = MAX_RECORDING_DURATION,
     silence_seconds: float = SILENCE_TIMEOUT,
     should_continue: Any = None,
+    mic_name: str = "",
 ) -> np.ndarray | None:
     """Record from the microphone until silence. Blocking — run in a thread.
 
     Returns the captured audio, or None if nothing was said.
     """
     import sounddevice as sd
+
+    from nixorb.utils.audio import resolve_input_device
+
+    # Never just take sd.default.device: on PipeWire that is routinely a
+    # monitor/loopback source, which records the speakers instead of a mic
+    # and yields a confident transcript of the assistant's own voice.
+    resolved = resolve_input_device(mic_index, mic_name)
+    log.info(
+        "ASR: recording from device[%s] '%s' (%s), threshold=%.4f",
+        resolved.index, resolved.name, resolved.reason, threshold,
+    )
 
     block = int(SAMPLE_RATE * CHUNK_DURATION)
     silence_blocks = int(SAMPLE_RATE * silence_seconds)
@@ -55,12 +90,16 @@ def record_with_vad(
     total = 0
     heard_speech = False
 
+    calib_needed = int(SAMPLE_RATE * CALIBRATION_SECONDS)
+    calib_seen = 0
+    calib_rms: list[float] = []
+
     try:
         with sd.InputStream(
             samplerate=SAMPLE_RATE,
             channels=CHANNELS,
             dtype=DTYPE,
-            device=mic_index,
+            device=resolved.index,
             blocksize=block,
         ) as stream:
             while total < max_samples:
@@ -73,6 +112,22 @@ def record_with_vad(
                 total += len(chunk)
 
                 rms = float(np.sqrt(np.mean(chunk**2)))
+
+                # Calibrate against the room before trusting the threshold.
+                if calib_seen < calib_needed:
+                    calib_rms.append(rms)
+                    calib_seen += len(chunk)
+                    if calib_seen >= calib_needed:
+                        noise_floor = float(np.mean(calib_rms))
+                        adaptive = noise_floor * 2.5
+                        if adaptive > threshold:
+                            threshold = min(adaptive, MAX_SILENCE_THRESHOLD * 2)
+                            log.info(
+                                "ASR: ambient noise floor %.4f raises the VAD "
+                                "threshold to %.4f", noise_floor, threshold,
+                            )
+                    continue
+
                 if rms > threshold:
                     heard_speech = True
                     silence_run = 0
@@ -113,6 +168,7 @@ class ASREngine(ABC):
         self._settings = settings
         self._model: Any = None
         self._mic_index = getattr(settings, "microphone_index", None)
+        self._mic_name = getattr(settings, "microphone_name", "") or ""
         self._recording = False
 
     # ── Backend hooks ────────────────────────────────────────────── #
@@ -173,6 +229,7 @@ class ASREngine(ABC):
                 MAX_RECORDING_DURATION,
                 SILENCE_TIMEOUT,
                 lambda: self._recording,
+                self._mic_name,
             )
             await bus.emit(Event.RECORDING_STOP, source=self.name)
 
@@ -210,11 +267,6 @@ class ASREngine(ABC):
 
     @property
     def _vad_threshold(self) -> float:
-        """Mic sensitivity maps onto the VAD threshold, inverted.
-
-        Higher sensitivity should trigger on quieter speech, so it must
-        *lower* the RMS threshold.
-        """
-        sensitivity = float(getattr(self._settings, "mic_sensitivity", 0.5) or 0.5)
-        sensitivity = max(0.05, min(1.0, sensitivity))
-        return SILENCE_THRESHOLD * (1.0 / (sensitivity * 2))
+        return sensitivity_to_threshold(
+            getattr(self._settings, "mic_sensitivity", 0.5)
+        )

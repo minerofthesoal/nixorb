@@ -127,10 +127,6 @@ async def _async_main(settings, app) -> None:
     await bus.start()
     log.info("NixOrb %s starting", __import__("nixorb").__version__)
 
-    # Prime qasync cross-thread wakeup from Qt thread
-    # This prevents "QSocketNotifier: Can only be used with threads started with QThread"
-    asyncio.get_running_loop().call_soon_threadsafe(lambda: None)
-
     # Bound up front so the finally-block below can clean up whatever
     # startup managed to create before it failed.
     asr = None
@@ -161,21 +157,24 @@ async def _async_main(settings, app) -> None:
         # has even painted, which is indistinguishable from a hang.
         memory = await asyncio.to_thread(VectorMemory, settings.memory_dir)
 
-        # ASR — faster-whisper, any Hub model, or Nemotron.
-        from nixorb.asr.factory import create_asr
-        asr = create_asr(settings)
+        # ASR — faster-whisper, any HuggingFace ASR model, or Nemotron's
+        # native cache-aware streaming, per settings.asr_backend.
+        from nixorb.asr.factory import build_asr
+        asr = build_asr(settings)
         log.info("ASR: backend '%s' (%s)", asr.name, settings.asr_model)
 
-        # LLM — Ollama daemon or an in-process Hugging Face model.
-        from nixorb.llm.factory import create_llm
-        llm = create_llm(settings)
-        llm_model = (
-            settings.llm_hf_model
-            if settings.llm_backend == "huggingface"
-            else settings.llm_model
-        )
+        # LLM — Ollama, a local HuggingFace model (GGUF or transformers), or
+        # any OpenAI-compatible endpoint. This used to always be
+        # OllamaBackend regardless of what was configured, which is why
+        # changing llm_backend appeared to do nothing.
+        from nixorb.llm.factory import build_llm
+        llm = build_llm(settings)
+        llm_model = settings.llm_model
 
-        # Check Ollama health
+        # Health check — backend-agnostic; each backend explains how to fix
+        # itself (pull an Ollama tag, install a missing package, check a
+        # HF repo id, reach an OpenAI-compatible server) rather than every
+        # backend being told to "ollama pull" a HuggingFace repo id.
         health = await llm.health_check()
         if health["ok"]:
             log.info("LLM: %s ready with model '%s'", settings.llm_backend, llm_model)
@@ -192,11 +191,15 @@ async def _async_main(settings, app) -> None:
                 source="startup",
             )
 
-        # TTS — Piper, any Hub model, or espeak-ng.
-        from nixorb.tts.tts_factory import create_tts
-        tts = create_tts(settings)
+        # TTS — Piper, GLaDOS, any HuggingFace TTS model, or OpenAI TTS, per
+        # settings.tts_backend. Previously always PiperTTS regardless of
+        # what was configured.
+        from nixorb.tts.tts_factory import build_tts
+        tts = build_tts(settings)
         log.info("TTS: backend '%s'", getattr(tts, "name", settings.tts_backend))
 
+        # Wraps whichever engine we got, so each sentence is spoken as the
+        # model produces it instead of after the whole answer lands.
         from nixorb.tts.speaker import Speaker
         speaker = Speaker(tts, streaming=settings.tts_streaming)
 
@@ -224,6 +227,22 @@ async def _async_main(settings, app) -> None:
         plugin_loader = PluginLoader(settings.plugin_dir)
         if settings.plugins_enabled:
             plugin_loader.load_all()
+
+        # Let timer_plugin speak its reminders through the active TTS
+        # backend, not just a desktop notification. set_timer() fires from
+        # a plain threading.Timer (not the event loop), so bridge it back
+        # with run_coroutine_threadsafe.
+        try:
+            from nixorb.plugins.builtin.timer_plugin import set_speak_callback
+
+            _main_loop = asyncio.get_running_loop()
+
+            def _speak_reminder(text: str) -> None:
+                asyncio.run_coroutine_threadsafe(tts.speak(text), _main_loop)
+
+            set_speak_callback(_speak_reminder)
+        except Exception as exc:
+            log.debug("Timer: could not wire TTS speak callback: %s", exc)
 
         # ── Control socket ───────────────────────────────────────── #
         # This is what makes `nixorb trigger` work, and with it any KDE
@@ -758,6 +777,23 @@ def main() -> int:
     # qasync: integrate asyncio with the Qt event loop
     loop = qasync.QEventLoop(app)
     asyncio.set_event_loop(loop)
+
+    # qasync schedules every asyncio callback through one QObject
+    # (its internal `_SimpleTimer`) via QObject.startTimer(). That object is
+    # only usable from the thread that first calls startTimer() on it. If
+    # anything reaches it from another thread before this one does — a
+    # platform-theme/DBus integration thread some desktops (KDE Plasma
+    # included) spin up during QApplication startup, for instance — Qt
+    # refuses with "QObject::startTimer: Timers can only be used with
+    # threads started with QThread" (and the equivalent QSocketNotifier
+    # warning for any fd registered the same way), and every asyncio
+    # callback in the process silently stops firing from then on —
+    # including the ones needed to even start NixOrb's own startup
+    # coroutine, which is why nothing after this point would otherwise log
+    # anything at all. Running one trivial coroutine to completion here,
+    # before anything else touches Qt or asyncio, claims that first call
+    # for this thread while the loop is still idle.
+    loop.run_until_complete(asyncio.sleep(0))
 
     # Qt swallows SIGINT, so Ctrl-C would otherwise do nothing at all.
     def _handle_signal(signum, _frame) -> None:

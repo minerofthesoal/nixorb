@@ -17,11 +17,14 @@ from nixorb.asr.base import (  # noqa: F401  (re-exported for callers/tests)
     CHUNK_DURATION,
     DTYPE,
     MAX_RECORDING_DURATION,
+    MAX_SILENCE_THRESHOLD,
+    MIN_SILENCE_THRESHOLD,
     SAMPLE_RATE,
     SILENCE_THRESHOLD,
     SILENCE_TIMEOUT,
     ASREngine,
     record_with_vad,
+    sensitivity_to_threshold,
 )
 
 if TYPE_CHECKING:

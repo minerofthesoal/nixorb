@@ -20,9 +20,9 @@ class TestSettings:
 
     def test_default_settings(self):
         s = Settings()
-        assert s.llm_backend == "ollama"
-        assert s.llm_model == "llama3.2"
-        assert s.tts_backend == "piper"
+        assert s.llm_backend == "huggingface"
+        assert s.llm_model == "empero-ai/Qwen3.8-2B-Distill-GGUF"
+        assert s.tts_backend == "huggingface"
         # Off by default — openwakeword is the optional 'wakeword' extra.
         assert s.wake_word_enabled is False
         assert s.orb_size == 88
@@ -379,7 +379,10 @@ class TestOllamaBackend:
 
     def test_backend_init(self):
         from nixorb.llm.ollama_backend import OllamaBackend
-        settings = Settings()
+        # llm_model's default is now an HF repo id (the default llm_backend
+        # is "huggingface"); set an Ollama tag explicitly since that's what
+        # this backend actually expects.
+        settings = Settings(llm_model="llama3.2")
         llm = OllamaBackend(settings)
         assert llm._model == "llama3.2"
         assert llm._host == "http://localhost:11434"
@@ -390,7 +393,10 @@ class TestPiperTTS:
 
     def test_init(self):
         from nixorb.tts.piper_tts import PiperTTS
-        settings = Settings()
+        # tts_voice's default is now a Breeze-TTS-2 voice-design instruction
+        # (the default tts_backend is "huggingface"); set a Piper voice name
+        # explicitly since that's what this backend actually expects.
+        settings = Settings(tts_voice="en_US-lessac-medium")
         tts = PiperTTS(settings)
         assert tts._voice == "en_US-lessac-medium"
 

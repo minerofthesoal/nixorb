@@ -1,7 +1,13 @@
-"""Choose an LLM backend from settings.
+"""Pick an LLM backend from settings.
 
-    llm_backend = "ollama"        # default — local daemon, no Python deps
-    llm_backend = "huggingface"   # any causal LM on the Hub, in-process
+    llm_backend = "ollama"        # local Ollama server, no Python deps
+    llm_backend = "huggingface"   # any local model: GGUF, or transformers
+    llm_backend = "openai"        # any OpenAI-compatible HTTP endpoint
+
+Before this existed, main.py always constructed OllamaBackend regardless of
+``settings.llm_backend`` — the setting was logged in the startup banner but
+never consulted, so choosing "huggingface" silently kept running Ollama and
+ran Ollama's health check against a HuggingFace repo id.
 """
 from __future__ import annotations
 
@@ -16,13 +22,11 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-_ALIASES = {
-    "hf": "huggingface",
-    "transformers": "huggingface",
-    "local": "huggingface",
-}
+_ALIASES = {"hf": "huggingface", "transformers": "huggingface",
+            "local": "huggingface", "openai-compatible": "openai",
+            "vllm": "openai", "lmstudio": "openai"}
 
-BACKENDS = ("ollama", "huggingface")
+BACKENDS = ("ollama", "huggingface", "openai")
 
 
 class LLMBackend(Protocol):
@@ -51,24 +55,38 @@ def normalise_backend(name: str | None) -> str:
     return _ALIASES.get(key, key)
 
 
-def create_llm(settings: Settings) -> LLMBackend:
+def build_llm(settings: Settings) -> Any:
     """Build the configured LLM backend."""
     backend = normalise_backend(getattr(settings, "llm_backend", None))
 
     if backend == "huggingface":
-        from nixorb.llm.hf_backend import HuggingFaceBackend
+        from nixorb.llm.hf_llm_backend import HuggingFaceLLMBackend
 
-        return HuggingFaceBackend(settings)
+        log.info("LLM: using HuggingFace backend, model '%s'", settings.llm_model)
+        return HuggingFaceLLMBackend(settings)
+
+    if backend == "openai":
+        from nixorb.llm.openai_compat_backend import OpenAICompatBackend
+
+        log.info(
+            "LLM: using OpenAI-compatible backend at %s, model '%s'",
+            getattr(settings, "openai_base_url", ""), settings.llm_model,
+        )
+        return OpenAICompatBackend(settings)
 
     if backend != "ollama":
         log.warning(
-            "LLM: unknown backend %r (choose one of %s) — using ollama",
-            settings.llm_backend, ", ".join(BACKENDS),
+            "LLM: unknown llm_backend '%s' (choose one of %s) — using ollama",
+            getattr(settings, "llm_backend", None), ", ".join(BACKENDS),
         )
 
     from nixorb.llm.ollama_backend import OllamaBackend
 
+    log.info("LLM: using Ollama backend, model '%s'", settings.llm_model)
     return OllamaBackend(settings)
+
+
+create_llm = build_llm
 
 
 class OfflineFallbackManager:

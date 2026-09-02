@@ -1,3 +1,68 @@
+## [0.3.3] — 2026-09-02
+
+Merges the parallel Hugging Face work from `main` with the branch's native
+Nemotron and voice-streaming work. Both sides had independently built HF
+backends under different filenames; this keeps the union rather than one
+side's half.
+
+### Fixed
+
+- **The default config could not load its own default model.** `main`'s base
+  dependencies pinned `transformers>=4.44.0` while defaulting `asr_model` to
+  `nvidia/nemotron-3.5-asr-streaming-0.6b`, whose architecture only exists
+  from transformers 5.13. A clean install resolved happily and then died
+  inside `from_pretrained` with an unrecognised-model-type error. The floor
+  is now `>=5.13.0`, and `nixorb.hf.require_transformers()` reports the
+  installed version and the upgrade command instead of failing obscurely.
+- **The default Nemotron checkpoint ran without streaming.** `main` selected
+  it through the generic `automatic-speech-recognition` pipeline, which
+  re-transcribes a rolling buffer. The ASR factory now routes any Nemotron
+  checkpoint to the native cache-aware backend, whatever `asr_backend` says
+  — and routes `asr_backend="nemotron"` with a non-Nemotron model back to
+  the generic engine instead of failing to load.
+
+### Merged — kept from `main`
+
+- `openai_compat_backend.py`: `llm_backend="openai"` against any
+  OpenAI-compatible endpoint (OpenAI, vLLM, LM Studio, llama.cpp server).
+- `hf_llm_backend.py` replaces the branch's thinner HF LLM backend: it also
+  loads GGUF through llama-cpp-python, which is what makes a model fit
+  beside ASR on 8 GB.
+- `hf_asr_engine.py` replaces the branch's HF ASR engine: it approximates
+  streaming for models with no native streaming API.
+- Microphone resolution by name, monitor/loopback avoidance, and ambient
+  noise-floor calibration — moved into `asr/base.py` so *every* engine gets
+  them, rather than being duplicated in two of the three.
+- `glados` and `openai` TTS backends, the builtin calculator / system-info /
+  timer / weather plugins, the wake-word training scripts, `test_paths.py`,
+  and main's richer settings documentation.
+
+### Merged — kept from this branch
+
+- Native Nemotron cache-aware streaming (`nemotron_asr.py`).
+- `tts/speaker.py`: sentence-by-sentence playback, barge-in, and `<ACTION>`
+  suppression during streaming.
+- `hf.py`: shared device/dtype/token/cache plumbing and the transformers
+  version guard.
+- Follow-up listening, and a system prompt written for answers that are
+  spoken rather than read.
+
+### Changed
+
+- One factory per stage, exporting both `build_*` (main's spelling) and
+  `create_*` (the branch's), so no call site had to be rewritten twice.
+- ASR backend names accept both `faster_whisper` and `faster-whisper`.
+- `tts_hf_repo` is the canonical TTS model setting (main's name);
+  `tts_hf_model` is still read as a fallback.
+
+### Note
+
+`HuggingFaceTTS` passes `trust_remote_code=True` when building a
+`text-to-speech` pipeline, inherited from `main` — the default
+`BreezeBlue/Breeze-TTS-2` is a voice-design model that does not load without
+it. That executes Python from the model repo. `hf_trust_remote_code` (default
+off) still governs the ASR and LLM paths.
+
 ## [0.3.2] — 2026-09-01
 
 Version reset from the 2.0.x line to an honest pre-1.0 number.

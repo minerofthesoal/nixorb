@@ -135,6 +135,13 @@ else
     pip install torch torchaudio
 fi
 
+# llama-cpp-python compiles from source by default (several minutes). The
+# model this project ships with is tiny (~1.3 GB Q4_K_M GGUF), so CPU
+# inference is plenty fast — grab the prebuilt CPU wheel instead of building.
+echo -e "${BLUE}→ Installing llama-cpp-python (prebuilt CPU wheel)…${NC}"
+pip install llama-cpp-python \
+    --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+
 # Install NixOrb
 echo -e "${BLUE}→ Installing NixOrb…${NC}"
 pip install -e "."

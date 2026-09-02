@@ -31,10 +31,39 @@ dependencies = [
     "pydantic>=2.7.0",
     "pydantic-settings>=2.3.0",
     "tomli-w>=1.0.0",
-    "typer[all]>=0.12.3",
+    "typer>=0.12.3",
     "chromadb>=0.5.3",
     "pynput>=1.7.6",
     "cryptography>=42.0",
+    # Local HuggingFace LLM/ASR/TTS models — needed for the default config,
+    # which uses llm_backend="huggingface", asr_backend="huggingface", and
+    # tts_backend="huggingface". This deliberately does NOT include torch —
+    # it's not here below either, on purpose. torch needs a build matching
+    # your actual hardware (CPU, this project's own GTX 1080/cu118 pin, a
+    # different CUDA version, ROCm, ...), and there's no one variant that's
+    # correct as an unconditional dependency of a publicly-published
+    # package: pinning a specific +cu118 local version here previously
+    # broke CI's CPU-only runner outright (pip can't satisfy an exact
+    # +cu118 build from anywhere but PyTorch's own cu118 index, which
+    # nothing here points it at) and would equally break for anyone not on
+    # this exact card. Install torch yourself first — see
+    # requirements-cuda.txt for the GTX 1080 pin, or plain `pip install
+    # torch torchaudio` for CPU/whatever your platform resolves by
+    # default — matching the ordering install.sh/install.fish and
+    # .github/workflows/ci.yml already use.
+    # >= 5.13, not 4.x: that is where Nemotron3_5Asr landed, and the default
+    # asr_model is a Nemotron checkpoint. A lower floor resolves happily and
+    # then dies inside from_pretrained with an unrecognised-architecture
+    # error, which tells the user nothing about what to fix.
+    "transformers>=5.13.0",
+    "accelerate>=0.33.0",
+    "huggingface_hub>=0.24.0",
+    # GGUF models via llama.cpp — needed for llm_backend="huggingface" when
+    # llm_model/llm_gguf_file points at a GGUF checkpoint (the default does).
+    # Pulled via [tool.uv.sources] below on the prebuilt-CPU-wheel index —
+    # this model is tiny (~1.3 GB Q4_K_M), CPU inference is plenty fast, and
+    # skipping the source build saves several minutes on every fresh install.
+    "llama-cpp-python>=0.2.90",
 ]
 
 [project.optional-dependencies]
@@ -46,37 +75,66 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.10",
 ]
-
-# Any ASR / TTS / LLM model on the Hugging Face Hub.
+# NOT installed by default (a separate model-training step is required
+# before it's useful anyway — see scripts/wakeword_training/).
 #
-# transformers >= 5.13 is the floor, not 4.x: that is where Nemotron3_5Asr
-# landed, and it is the default ASR checkpoint. A lower floor resolves fine
-# and then fails at load time with an unregistered-architecture error, which
-# is a far worse experience than a resolver conflict at install time.
+# This is a plain PyPI version pin, not a git+https reference — PyPI
+# rejects uploads with direct-URL dependencies in their metadata outright
+# (tried it; got "400 Can't have direct dependency"). Which means this
+# extra, installed as-is via `pip install nixorb[wakeword]`, still hits
+# the tflite-runtime wall on Python 3.12+: PyPI's published openwakeword
+# 0.6.0 depends on tflite-runtime>=2.8.0, which never shipped a wheel past
+# cp311. That's fixed on openWakeWord's GitHub main branch (migrated to
+# ai-edge-litert, which does publish cp312+ wheels) — but a fix that only
+# exists as an unreleased git commit can't be expressed in package
+# metadata PyPI will accept. To actually get a working install on
+# Python 3.12+ today:
+#
+#   pip install nixorb  # base install, no [wakeword] extra
+#   pip install 'openwakeword @ git+https://github.com/dscripka/openWakeWord.git'
+#
+# Once openWakeWord cuts a new PyPI release with this fix, this extra can
+# go back to depending on it normally and that workaround goes away.
+wakeword = ["openwakeword>=0.6.0"]
+# Any OpenAI-compatible endpoint (real OpenAI, or a local vLLM / TGI /
+# LM Studio / llama.cpp server) — llm_backend="openai" or tts_backend="openai".
+openai = ["openai>=1.40.0"]
+
+# Extras on top of the base HF stack: SpeechT5 speaker x-vectors live in a
+# dataset repo, and several tokenizers need sentencepiece/protobuf.
 hf = [
-    "transformers>=5.13",
     "torch>=2.2",
-    "accelerate>=0.30",
-    "huggingface-hub>=0.24",
     "sentencepiece>=0.2",
     "protobuf>=4.25",
-    "soundfile>=0.12.1",
-    # SpeechT5 speaker x-vectors come from a dataset repo.
     "datasets>=2.19",
 ]
 
-# NVIDIA Nemotron 3.5 ASR. Same floor as [hf]; kept as a separate extra so
-# you can install streaming speech without pulling datasets/sentencepiece.
+# NVIDIA Nemotron 3.5 ASR. transformers >= 5.13 is already the base floor;
+# this exists so the requirement is stated where people look for it.
 nemotron = [
     "transformers>=5.13",
     "torch>=2.2",
     "soundfile>=0.12.1",
 ]
 
-# 4-bit quantisation, so a 7B fits beside the ASR model on 8 GB.
+# 4-bit quantisation, so a larger transformers model fits beside ASR on 8 GB.
 quant = ["bitsandbytes>=0.43"]
 
-wakeword = ["openwakeword>=0.6.0"]
+# GGUF models via llama.cpp. Already a base dependency — this extra exists
+# so the install command the backend prints when it is missing is real.
+llama_cpp = ["llama-cpp-python>=0.2.90"]
+
+# Declarative index pins so a plain `pip install .` / `uv tool install .` /
+# `uv sync` resolves the right prebuilt wheels with zero manual --index-url
+# flags. uv reads this section; plain pip does not — install.sh/install.fish
+# pass the same index URLs explicitly on their pip install lines instead.
+[tool.uv.sources]
+llama-cpp-python = [{ index = "llama-cpu" }]
+
+[[tool.uv.index]]
+name = "llama-cpu"
+url = "https://abetlen.github.io/llama-cpp-python/whl/cpu"
+explicit = true
 
 [project.scripts]
 nixorb = "nixorb.cli:app"

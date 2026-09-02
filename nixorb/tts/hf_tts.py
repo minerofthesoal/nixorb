@@ -97,10 +97,14 @@ class HuggingFaceTTS:
     def __init__(self, settings: Settings | None = None) -> None:
         self._settings = settings
         self._model_id = (
-            getattr(settings, "tts_hf_model", "") or DEFAULT_MODEL
-            if settings else DEFAULT_MODEL
-        )
+            getattr(settings, "tts_hf_repo", "")
+            or getattr(settings, "tts_hf_model", "")
+            or DEFAULT_MODEL
+        ) if settings else DEFAULT_MODEL
         self._speaker = getattr(settings, "tts_hf_speaker", "") if settings else ""
+        # Voice-design models (Breeze-TTS-2) take the voice as a natural
+        # language instruction rather than a named preset.
+        self._voice = getattr(settings, "tts_voice", "") if settings else ""
         self._volume = float(getattr(settings, "tts_volume", 1.0) or 1.0)
         self._speed = float(getattr(settings, "tts_speed", 1.0) or 1.0)
         self._engine: Any = None
@@ -143,7 +147,12 @@ class HuggingFaceTTS:
                     task,
                     model=self._model_id,
                     device=0 if device == "cuda" else -1,
-                    **kwargs,
+                    # Voice-design models ship custom code in the repo. This
+                    # executes it — the same call main.py's default config
+                    # already relies on for Breeze-TTS-2.
+                    trust_remote_code=True,
+                    **{k: v for k, v in kwargs.items()
+                       if k != "trust_remote_code"},
                 )
                 return {"kind": "pipeline", "pipe": pipe}
             except Exception as exc:
@@ -191,8 +200,17 @@ class HuggingFaceTTS:
         if engine["kind"] == "speecht5":
             return self._synthesize_speecht5(engine, text)
 
-        result = engine["pipe"](text)
-        return _waveform_from(result)
+        # A voice-design model takes the voice description per call.
+        if self._voice and _looks_like_voice_instruction(self._voice):
+            try:
+                return _waveform_from(
+                    engine["pipe"](text, forward_params={"instruction": self._voice})
+                )
+            except (TypeError, ValueError) as exc:
+                log.debug("TTS: %s ignores an instruction (%s)",
+                          self._model_id, exc)
+
+        return _waveform_from(engine["pipe"](text))
 
     @staticmethod
     def _synthesize_speecht5(engine: dict[str, Any], text: str) -> tuple[np.ndarray, int]:
@@ -266,6 +284,16 @@ class HuggingFaceTTS:
         except Exception as exc:
             log.error("TTS: synthesize_to_file failed: %s", exc)
             return False
+
+
+def _looks_like_voice_instruction(voice: str) -> bool:
+    """True for a prose voice description, not a Piper voice id.
+
+    tts_voice is shared with Piper, where it holds things like
+    "en_US-lessac-medium"; sending that to a voice-design model as an
+    instruction produces nonsense.
+    """
+    return " " in voice.strip()
 
 
 def _waveform_from(result: Any) -> tuple[np.ndarray, int]:

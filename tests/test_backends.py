@@ -15,18 +15,39 @@ from nixorb.settings import Settings
 
 # ── ASR selection ────────────────────────────────────────────────── #
 
-def test_default_asr_is_faster_whisper():
-    from nixorb.asr.factory import create_asr
+def test_default_asr_reaches_the_native_nemotron_backend():
+    """The shipped default points asr_model at a Nemotron checkpoint. It has
+    to reach the native streaming backend, not the generic pipeline."""
+    from nixorb.asr.factory import build_asr
+    from nixorb.asr.nemotron_asr import NemotronASREngine
+
+    assert isinstance(build_asr(Settings()), NemotronASREngine)
+
+
+def test_faster_whisper_backend():
+    from nixorb.asr.factory import build_asr
     from nixorb.asr.whisper_engine import WhisperEngine
 
-    assert isinstance(create_asr(Settings()), WhisperEngine)
+    engine = build_asr(Settings(asr_backend="faster_whisper", asr_model="large-v3"))
+    assert isinstance(engine, WhisperEngine)
+
+
+def test_nemotron_backend_with_a_foreign_model_degrades():
+    """asr_backend='nemotron' with someone else's checkpoint must not crash."""
+    from nixorb.asr.factory import build_asr
+    from nixorb.asr.hf_asr_engine import HFASREngine
+
+    engine = build_asr(
+        Settings(asr_backend="nemotron", asr_model="openai/whisper-small")
+    )
+    assert isinstance(engine, HFASREngine)
 
 
 def test_huggingface_asr_backend():
-    from nixorb.asr.factory import create_asr
-    from nixorb.asr.hf_asr import HFASREngine
+    from nixorb.asr.factory import build_asr
+    from nixorb.asr.hf_asr_engine import HFASREngine
 
-    engine = create_asr(
+    engine = build_asr(
         Settings(asr_backend="huggingface", asr_model="openai/whisper-small")
     )
     assert isinstance(engine, HFASREngine)
@@ -34,10 +55,10 @@ def test_huggingface_asr_backend():
 
 
 def test_nemotron_asr_backend():
-    from nixorb.asr.factory import create_asr
+    from nixorb.asr.factory import build_asr
     from nixorb.asr.nemotron_asr import NemotronASREngine
 
-    engine = create_asr(
+    engine = build_asr(
         Settings(
             asr_backend="nemotron",
             asr_model="nvidia/nemotron-3.5-asr-streaming-0.6b",
@@ -49,10 +70,10 @@ def test_nemotron_asr_backend():
 
 def test_nemotron_model_id_selects_the_native_backend():
     """Pointing asr_model at Nemotron must not silently lose streaming."""
-    from nixorb.asr.factory import create_asr
+    from nixorb.asr.factory import build_asr
     from nixorb.asr.nemotron_asr import NemotronASREngine
 
-    engine = create_asr(
+    engine = build_asr(
         Settings(
             asr_backend="huggingface",
             asr_model="nvidia/nemotron-3.5-asr-streaming-0.6b",
@@ -63,9 +84,10 @@ def test_nemotron_model_id_selects_the_native_backend():
 
 @pytest.mark.parametrize(
     "alias,expected",
-    [("whisper", "faster-whisper"), ("hf", "huggingface"),
-     ("transformers", "huggingface"), ("nvidia", "nemotron"),
-     ("NEMOTRON", "nemotron"), (None, "faster-whisper")],
+    [("whisper", "faster_whisper"), ("faster-whisper", "faster_whisper"),
+     ("hf", "huggingface"), ("transformers", "huggingface"),
+     ("nvidia", "nemotron"), ("NEMOTRON", "nemotron"),
+     (None, "faster_whisper")],
 )
 def test_asr_backend_aliases(alias, expected):
     from nixorb.asr.factory import normalise_backend
@@ -74,71 +96,85 @@ def test_asr_backend_aliases(alias, expected):
 
 
 def test_unknown_asr_backend_falls_back_loudly(caplog):
-    from nixorb.asr.factory import create_asr
+    from nixorb.asr.factory import build_asr
     from nixorb.asr.whisper_engine import WhisperEngine
 
-    engine = create_asr(Settings(asr_backend="nonsense"))
+    engine = build_asr(Settings(asr_backend="nonsense", asr_model="large-v3"))
     assert isinstance(engine, WhisperEngine)
     assert "nonsense" in caplog.text
 
 
 # ── LLM selection ────────────────────────────────────────────────── #
 
-def test_default_llm_is_ollama():
-    from nixorb.llm.factory import create_llm
+def test_ollama_llm_backend():
+    from nixorb.llm.factory import build_llm
     from nixorb.llm.ollama_backend import OllamaBackend
 
-    assert isinstance(create_llm(Settings()), OllamaBackend)
+    assert isinstance(build_llm(Settings(llm_backend="ollama")), OllamaBackend)
+
+
+def test_openai_compatible_llm_backend():
+    from nixorb.llm.factory import build_llm
+
+    backend = build_llm(Settings(llm_backend="openai", openai_api_key="sk-x"))
+    assert type(backend).__name__ == "OpenAICompatBackend"
 
 
 def test_huggingface_llm_backend():
-    from nixorb.llm.factory import create_llm
-    from nixorb.llm.hf_backend import HuggingFaceBackend
+    from nixorb.llm.factory import build_llm
+    from nixorb.llm.hf_llm_backend import HuggingFaceLLMBackend
 
-    llm = create_llm(Settings(llm_backend="huggingface",
-                              llm_hf_model="Qwen/Qwen2.5-3B-Instruct"))
-    assert isinstance(llm, HuggingFaceBackend)
+    llm = build_llm(Settings(llm_backend="huggingface",
+                             llm_model="Qwen/Qwen2.5-3B-Instruct"))
+    assert isinstance(llm, HuggingFaceLLMBackend)
     assert llm.model == "Qwen/Qwen2.5-3B-Instruct"
 
 
+def test_gguf_checkpoints_route_to_llama_cpp():
+    """A *-GGUF repo must not be loaded through transformers."""
+    from nixorb.llm.hf_llm_backend import _looks_like_gguf
+
+    assert _looks_like_gguf("empero-ai/Qwen3.8-2B-Distill-GGUF") is True
+    assert _looks_like_gguf("model.Q4_K_M.gguf") is True
+    assert _looks_like_gguf("Qwen/Qwen2.5-3B-Instruct") is False
+
+
 def test_unknown_llm_backend_falls_back_loudly(caplog):
-    from nixorb.llm.factory import create_llm
+    from nixorb.llm.factory import build_llm
     from nixorb.llm.ollama_backend import OllamaBackend
 
-    assert isinstance(create_llm(Settings(llm_backend="gpt5")), OllamaBackend)
+    assert isinstance(build_llm(Settings(llm_backend="gpt5")), OllamaBackend)
     assert "gpt5" in caplog.text
-
-
-async def test_hf_llm_health_check_without_transformers():
-    """A missing dependency must name the install command, not stack-trace."""
-    from nixorb import hf
-    from nixorb.llm.hf_backend import HuggingFaceBackend
-
-    llm = HuggingFaceBackend(Settings(llm_backend="huggingface"))
-    with patch.object(hf, "require",
-                      side_effect=hf.MissingDependency("'torch' is not installed")):
-        health = await llm.health_check()
-
-    assert health["ok"] is False
-    assert "torch" in health["error"]
 
 
 # ── TTS selection ────────────────────────────────────────────────── #
 
-def test_default_tts_is_piper():
-    from nixorb.tts.piper_tts import PiperTTS
-    from nixorb.tts.tts_factory import create_tts
+def test_default_tts_is_huggingface_when_available():
+    """The shipped default is a Hub voice-design model."""
+    from nixorb.tts.hf_tts import HuggingFaceTTS
+    from nixorb.tts.tts_factory import build_tts
 
-    assert isinstance(create_tts(Settings()), PiperTTS)
+    with patch.object(HuggingFaceTTS, "available", True):
+        assert isinstance(build_tts(Settings()), HuggingFaceTTS)
+
+
+def test_default_tts_falls_back_to_piper_without_transformers():
+    """Selecting an unavailable backend must never leave the orb mute."""
+    from nixorb.tts.hf_tts import HuggingFaceTTS
+    from nixorb.tts.piper_tts import PiperTTS
+    from nixorb.tts.tts_factory import build_tts
+
+    with patch.object(HuggingFaceTTS, "available", False):
+        assert isinstance(build_tts(Settings()), PiperTTS)
 
 
 def test_huggingface_tts_backend():
     from nixorb.tts.hf_tts import HuggingFaceTTS
-    from nixorb.tts.tts_factory import create_tts
+    from nixorb.tts.tts_factory import build_tts
 
     with patch.object(HuggingFaceTTS, "available", True):
-        engine = create_tts(
-            Settings(tts_backend="huggingface", tts_hf_model="facebook/mms-tts-eng")
+        engine = build_tts(
+            Settings(tts_backend="huggingface", tts_hf_repo="facebook/mms-tts-eng")
         )
     assert isinstance(engine, HuggingFaceTTS)
     assert engine._model_id == "facebook/mms-tts-eng"
@@ -148,19 +184,19 @@ def test_huggingface_tts_falls_back_when_transformers_is_missing(caplog):
     """Selecting an unavailable backend must not leave the orb mute."""
     from nixorb.tts.hf_tts import HuggingFaceTTS
     from nixorb.tts.piper_tts import PiperTTS
-    from nixorb.tts.tts_factory import create_tts
+    from nixorb.tts.tts_factory import build_tts
 
     with patch.object(HuggingFaceTTS, "available", False):
-        engine = create_tts(Settings(tts_backend="huggingface"))
+        engine = build_tts(Settings(tts_backend="huggingface"))
 
     assert isinstance(engine, PiperTTS)
     assert "nixorb[hf]" in caplog.text
 
 
 def test_espeak_backend_skips_piper():
-    from nixorb.tts.tts_factory import create_tts
+    from nixorb.tts.tts_factory import build_tts
 
-    engine = create_tts(Settings(tts_backend="espeak"))
+    engine = build_tts(Settings(tts_backend="espeak"))
     assert engine._piper_available is False
 
 
@@ -370,36 +406,6 @@ def test_load_kwargs_passes_cache_dir(tmp_path):
 
 # ── HF ASR result shapes ─────────────────────────────────────────── #
 
-@pytest.mark.parametrize(
-    "result,expected",
-    [
-        ("plain text", "plain text"),
-        ({"text": " hello "}, "hello"),
-        ([{"text": "one"}, {"text": "two"}], "one two"),
-        ({"text": ""}, ""),
-    ],
-)
-def test_hf_asr_extracts_text_from_pipeline_output(result, expected):
-    from nixorb.asr.hf_asr import _extract_text
-
-    assert _extract_text(result) == expected
-
-
-def test_hf_asr_only_sends_language_to_multilingual_models():
-    """Passing language= to a CTC model is an error, not a no-op."""
-    from nixorb.asr.hf_asr import HFASREngine
-
-    whisper = HFASREngine(Settings(asr_model="openai/whisper-small",
-                                   asr_language="fr"))
-    wav2vec = HFASREngine(Settings(asr_model="facebook/wav2vec2-base-960h",
-                                   asr_language="fr"))
-    blank = HFASREngine(Settings(asr_model="openai/whisper-small",
-                                 asr_language=""))
-
-    assert whisper._wants_language() is True
-    assert wav2vec._wants_language() is False
-    assert blank._wants_language() is False
-
 
 # ── HF TTS output shapes ─────────────────────────────────────────── #
 
@@ -450,25 +456,6 @@ async def test_hf_tts_failure_is_reported_on_the_bus(started_bus):
 
 
 # ── LLM tool calls ───────────────────────────────────────────────── #
-
-def test_hf_backend_parses_in_band_tool_calls():
-    """Qwen-style models emit calls as JSON in tags, not a structured field."""
-    from nixorb.llm.hf_backend import _parse_tool_calls
-
-    text = (
-        'Sure.\n<tool_call>\n{"name": "get_weather", '
-        '"arguments": {"city": "Perth"}}\n</tool_call>'
-    )
-    assert _parse_tool_calls(text) == [
-        {"name": "get_weather", "arguments": {"city": "Perth"}}
-    ]
-
-
-def test_hf_backend_ignores_malformed_tool_calls():
-    from nixorb.llm.hf_backend import _parse_tool_calls
-
-    assert _parse_tool_calls("<tool_call>not json</tool_call>") == []
-    assert _parse_tool_calls("no tags here") == []
 
 
 # ── Nemotron against the real transformers classes ───────────────── #
