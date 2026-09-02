@@ -23,6 +23,15 @@ pip install 'nixorb[nemotron]'  # NVIDIA Nemotron 3.5 streaming ASR
 pip install 'nixorb[quant]'     # 4-bit LLMs (bitsandbytes)
 ```
 
+> **Install NixOrb into its own virtualenv**, not a shared interpreter.
+> The default ASR checkpoint needs `transformers >= 5.13`, and much of the
+> local-AI ecosystem still pins `transformers <= 4.5x` — LLaMA-Factory,
+> for one. Whichever you install second wins, pip prints a single
+> `dependency conflicts` warning, and the loser breaks later from inside a
+> model loader. `./install.sh` already builds one at
+> `~/.local/share/nixorb/venv`; `nixorb check` tells you if you are in a
+> shared environment and names anything you collide with.
+
 ### Any Hugging Face model
 
 ```toml
@@ -82,6 +91,20 @@ cd nixorb
 chmod +x install.sh
 ./install.sh
 ```
+
+The installer puts everything in a virtualenv at
+`~/.local/share/nixorb/venv` and links the launcher into `~/.local/bin`.
+Installing by hand elsewhere, do the same — see the note under
+[Models](#models) for why a shared interpreter breaks this project:
+
+```bash
+python -m venv ~/.local/share/nixorb/venv
+~/.local/share/nixorb/venv/bin/pip install torch torchaudio   # or the CUDA build
+~/.local/share/nixorb/venv/bin/pip install -e .
+ln -sf ~/.local/share/nixorb/venv/bin/nixorb ~/.local/bin/nixorb
+```
+
+Python 3.12 – 3.14 are supported.
 
 ### Start NixOrb
 
@@ -227,6 +250,8 @@ and whether the configured model is installed.
 | Commands are always denied | Approve the confirmation dialog, or set `require_action_confirmation = false`. |
 | A Hugging Face model won't load | `nixorb status` names the failure. Gated repo? Set `hf_token`. Custom architecture? `hf_trust_remote_code = true`. |
 | Nemotron has no streaming | Needs `transformers >= 5.13`: `pip install 'nixorb[nemotron]'`. |
+| pip prints `dependency conflicts` naming `transformers` | Another project in the same interpreter pins an older `transformers` than NixOrb's `>= 5.13`. They cannot share one; `nixorb check` names it. Put NixOrb in its own virtualenv. |
+| It forgets everything between sessions | ChromaDB failed to load — `nixorb check`, then the log line starting `Memory:`. |
 | Out of VRAM with an HF LLM | `llm_hf_load_in_4bit = true` (`pip install 'nixorb[quant]'`), or `hf_device = "cpu"`. |
 | Actions do nothing when run as root | NixOrb disables command execution as root — run it as your normal user. |
 

@@ -1,3 +1,67 @@
+## [2.0.6] — 2026-09-02
+
+> Numbered 2.0.6, not 0.3.4. Release artifacts take their version from the
+> git tag — `release.yml` rewrites `nixorb/__init__.py` from it — and the
+> published line is at v2.0.5, so a `0.3.x` here reads to pip as a
+> downgrade of what is already installed. The `0.3.x` entries below were
+> written against the in-repo `__version__`, which had drifted from the
+> tags.
+
+Installing NixOrb next to other local-AI tooling broke both of them, and
+Python 3.14 silently disabled long-term memory. Both are fixed, and the
+environment NixOrb runs in is now something it can report on.
+
+### Fixed
+
+- **Long-term memory was silently dead on Python 3.14.** 3.14 removed
+  `typing.ByteString`. `overrides` — last released in January 2024, pinned
+  by ChromaDB at `>=7.3.1`, with no fixed version to upgrade to — reads that
+  name at import time, so `import chromadb` raised `AttributeError` before
+  reaching a line of its own code. NixOrb caught it, logged
+  `Memory: ChromaDB init failed`, and carried on with memory switched off.
+  `nixorb.compat.restore_typing_bytestring()` puts the name back before the
+  import; delete it when `overrides` ships a release that does not need it.
+- **`install.fish` created its virtualenv with `--system-site-packages`.**
+  Every package it needs is installed into that venv anyway, so the flag
+  bought nothing and let whatever is in the user's site-packages —
+  including a conflicting `transformers` — leak straight back in. Isolation
+  is the whole point of the venv. (`install.sh` was already correct.)
+- **CI pinned `torch==2.7.1+cpu`,** which has no cp314 wheels, so it could
+  not have run on the 3.14 it now tests.
+
+### Added
+
+- **`nixorb check` reports on the Python environment**, not just system
+  binaries: the interpreter, whether it is NixOrb's alone, NixOrb's own
+  requirements the environment stopped satisfying, and any installed
+  package whose pin the installed version violates.
+
+  This exists because of a specific, reproducible collision. NixOrb needs
+  `transformers>=5.13` — that is where the default Nemotron ASR
+  architecture landed — and LLaMA-Factory pins `transformers<=4.57.1`.
+  Installed into one interpreter, whichever goes second wins; pip prints a
+  single `dependency conflicts` warning naming neither project's symptom,
+  and the loser fails much later from inside a model loader. Nothing can
+  repair that — two disjoint pins genuinely cannot share an interpreter —
+  but `nixorb check` now names it on demand:
+
+  ```
+  ⚠️  llamafactory 0.9.5.dev0 needs transformers<=4.57.1,>=4.51.0,
+      but transformers 5.16.1 is installed
+       Their pins do not overlap; give each its own virtualenv.
+  ```
+
+  `nixorb status` prints the same findings, and nothing at all when the
+  environment is healthy.
+- **Python 3.14 support**, verified: the full suite passes on it, and CI now
+  runs 3.12, 3.13 and 3.14 rather than 3.12 alone.
+
+### Changed
+
+- README leads with installing into a virtualenv, and says why: the
+  `transformers` floor is not negotiable, so a shared interpreter is a
+  choice between NixOrb and whatever else pins it lower.
+
 ## [0.3.3] — 2026-09-02
 
 Merges the parallel Hugging Face work from `main` with the branch's native

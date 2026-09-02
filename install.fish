@@ -51,7 +51,11 @@ echo "==> [2/7] Creating Python virtual environment..."
 if test -d .venv
     echo "  .venv already exists — reusing"
 else
-    python -m venv .venv --system-site-packages
+    # Deliberately NOT --system-site-packages. Everything this venv needs
+    # is installed into it below, and letting the user's site-packages
+    # through is how NixOrb's transformers>=5.13 ends up fighting another
+    # project's transformers<=4.5x pin. Isolation is the entire point.
+    python -m venv .venv
     echo "  .venv created"
 end
 

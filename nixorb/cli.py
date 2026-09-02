@@ -215,6 +215,15 @@ def status() -> None:
         found = "✅" if shutil.which(dep) else "❌"
         typer.echo(f"  {found} {dep} — {desc}")
 
+    # Silent when the environment is healthy; `nixorb check` always reports.
+    from nixorb import envcheck
+
+    trouble = envcheck.problems()
+    if trouble:
+        typer.echo("\n🐍 Python environment:")
+        for line in trouble:
+            typer.echo(f"  {line}")
+
     # VRAM
     typer.echo("\n🎮 GPU:")
     try:
@@ -265,7 +274,14 @@ def config(
 
 @app.command()
 def check() -> None:
-    """Check system dependencies."""
+    """Check system dependencies and the Python environment."""
+    from nixorb import envcheck
+
+    typer.echo("Python environment:")
+    for line in envcheck.report():
+        typer.echo(line)
+
+    typer.echo("")
     required = ["python", "pip"]
     recommended = [
         "wl-paste", "wl-copy", "grim", "espeak-ng",
