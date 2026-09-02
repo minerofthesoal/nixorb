@@ -21,6 +21,10 @@ hf_token = ""
 # of waiting for silence. Only affects asr_backend="huggingface".
 asr_streaming = false
 asr_streaming_chunk_seconds = 2.5
+# Nemotron only. Its encoder streams natively rather than re-transcribing a
+# rolling buffer; this is the latency dial — right-context in 80ms frames:
+# 0 | 3 | 6 | 13 → 80 / 320 / 560 / 1120 ms.
+asr_nemotron_lookahead = 3
 # 0.0 (least sensitive) .. 1.0 (most sensitive to quiet/distant speech).
 mic_sensitivity = 0.5
 # Preferred input device by name substring, e.g. "USB" — survives reboots
@@ -60,6 +64,9 @@ tts_backend = "huggingface"
 # For tts_backend="huggingface": Breeze-TTS-2 is a voice-design model (no
 # named presets) — this is fed to it as a natural-language voice instruction.
 tts_voice = "A calm, clear-voiced woman with a dry, confident wit and unhurried delivery."
+# Speak each sentence as the model produces it, rather than waiting
+# for the whole answer. Most of what makes the orb feel responsive.
+tts_streaming = true
 tts_speed = 1.0
 tts_volume = 1.0
 # Required when tts_backend="huggingface", e.g. "microsoft/speecht5_tts".
@@ -91,3 +98,24 @@ require_action_confirmation = true
 sandbox_actions = false
 memory_enabled = true
 plugins_enabled = true
+
+# ── Conversation ───────────────────────────────────────────────── #
+# Triggering while the orb is talking stops it and listens, instead of
+# queueing behind the current answer.
+barge_in = true
+# After answering, keep listening this long for a follow-up without needing
+# the hotkey again. 0 disables it.
+follow_up_seconds = 6.0
+# Cap spoken replies when tts_streaming is off.
+tts_max_sentences = 6
+# SpeechT5 speaker x-vector: a .npy path, a cmu-arctic-xvectors index, or
+# blank for the default voice. Ignored by other models.
+tts_hf_speaker = ""
+
+# ── Hugging Face ───────────────────────────────────────────────── #
+# "auto" | "cuda" | "cpu"
+hf_device = "auto"
+# Override the model cache (default: ~/.cache/huggingface).
+hf_cache_dir = ""
+# Off by default: this executes Python from the model repo.
+hf_trust_remote_code = false

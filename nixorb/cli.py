@@ -88,9 +88,9 @@ def ask(
 
     async def _ask() -> None:
         settings = Settings.load()
-        from nixorb.llm.ollama_backend import OllamaBackend
+        from nixorb.llm.factory import create_llm
 
-        llm = OllamaBackend(settings)
+        llm = create_llm(settings)
         messages = [
             {"role": "system", "content": settings.llm_system_prompt},
             {"role": "user", "content": query},
@@ -100,13 +100,13 @@ def ask(
             health = await llm.health_check()
             if not health["ok"]:
                 typer.echo(f"❌ {health['error']}", err=True)
-                if health.get("models") is not None:
+                if settings.llm_backend == "ollama":
                     typer.echo(
                         f"   Try: ollama pull {settings.llm_model}", err=True
                     )
                 raise typer.Exit(1)
 
-            typer.echo(f"🤔 Querying {settings.llm_model}…")
+            typer.echo(f"🤔 Querying {settings.llm_backend}/{llm.model}…")
             response = await llm.generate(messages)
             typer.echo(f"\n🤖 {response}")
         except typer.Exit:
@@ -128,9 +128,9 @@ def tts(
 
     async def _speak() -> None:
         settings = Settings.load()
-        from nixorb.tts.piper_tts import PiperTTS
+        from nixorb.tts.tts_factory import create_tts
 
-        tts_engine = PiperTTS(settings)
+        tts_engine = create_tts(settings)
         typer.echo(f"🔊 Speaking: {text}")
         await tts_engine.speak(text)
 
@@ -155,26 +155,51 @@ def status() -> None:
     else:
         typer.echo("  ⭘ Not running — start it with: nixorb start")
 
-    # Check Ollama
-    typer.echo("\n🤖 AI Backend:")
+    # ── Models ──
+    typer.echo("\n🤖 Language model:")
     typer.echo(f"  Backend: {settings.llm_backend}")
-    typer.echo(f"  Model: {settings.llm_model}")
-    typer.echo(f"  Host: {settings.ollama_host}")
 
-    async def _probe() -> dict:
-        from nixorb.llm.ollama_backend import OllamaBackend
+    async def _probe() -> tuple[dict, str]:
+        from nixorb.llm.factory import create_llm
 
-        llm = OllamaBackend(settings)
+        llm = create_llm(settings)
         try:
-            return await llm.health_check()
+            return await llm.health_check(), llm.model
         finally:
             await llm.close()
 
-    health = asyncio.run(_probe())
+    health, llm_model = asyncio.run(_probe())
+    typer.echo(f"  Model: {llm_model}")
+    if settings.llm_backend == "ollama":
+        typer.echo(f"  Host: {settings.ollama_host}")
     if health["ok"]:
-        typer.echo(f"  ✅ Reachable, model '{settings.llm_model}' installed")
+        typer.echo(f"  ✅ Reachable, '{llm_model}' available")
     else:
         typer.echo(f"  ❌ {health['error']}")
+
+    typer.echo("\n🎙 Speech recognition:")
+    from nixorb.asr.factory import create_asr
+
+    asr = create_asr(settings)
+    typer.echo(f"  Backend: {asr.name}")
+    typer.echo(f"  Model: {settings.asr_model}")
+    typer.echo(f"  Language: {settings.asr_language or 'auto'}")
+    if asr.supports_streaming:
+        from nixorb.asr.nemotron_asr import LOOKAHEAD_LATENCY_MS
+
+        lookahead = settings.asr_nemotron_lookahead
+        latency = LOOKAHEAD_LATENCY_MS.get(lookahead, "?")
+        typer.echo(
+            f"  Streaming: {'on' if settings.asr_streaming else 'off'} "
+            f"(lookahead {lookahead} ≈ {latency}ms)"
+        )
+
+    typer.echo("\n🔊 Speech synthesis:")
+    typer.echo(f"  Backend: {settings.tts_backend}")
+    if settings.tts_backend == "huggingface":
+        typer.echo(f"  Model: {settings.tts_hf_repo}")
+    else:
+        typer.echo(f"  Voice: {settings.tts_voice}")
 
     # Check dependencies
     typer.echo("\n📦 Dependencies:")

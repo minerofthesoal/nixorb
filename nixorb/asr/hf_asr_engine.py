@@ -31,15 +31,15 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from nixorb.asr.whisper_engine import (
+from nixorb.asr.base import (
     CALIBRATION_SECONDS,
     CHUNK_DURATION,
     MAX_RECORDING_DURATION,
     MAX_SILENCE_THRESHOLD,
     SAMPLE_RATE,
     SILENCE_TIMEOUT,
-    _sensitivity_to_threshold,
 )
+from nixorb.asr.base import sensitivity_to_threshold as _sensitivity_to_threshold
 from nixorb.core.event_bus import Event, bus
 from nixorb.utils.audio import describe_devices, resolve_input_device
 
@@ -54,6 +54,13 @@ DTYPE = np.float32
 
 class HFASREngine:
     """ASR engine using any transformers automatic-speech-recognition model."""
+
+    #: Reported in logs and `nixorb status`, like every other engine.
+    name = "huggingface"
+    #: It has no native streaming API; partials come from re-transcribing a
+    #: rolling buffer, which is approximate but works for any HF model.
+    supports_streaming = True
+
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings

@@ -45,7 +45,7 @@ def test_vad_speech_detection():
 
 async def test_transcribe_raises_without_a_model(engine):
     with pytest.raises(RuntimeError, match="not loaded"):
-        engine._transcribe_sync(np.zeros(100, dtype=np.float32))
+        engine._transcribe(np.zeros(100, dtype=np.float32))
 
 
 async def test_record_and_transcribe_emits_events(engine, started_bus):
@@ -61,7 +61,7 @@ async def test_record_and_transcribe_emits_events(engine, started_bus):
     started_bus.subscribe(Event.RECORDING_STOP, _handler)
 
     engine._model = object()  # skip preload
-    with patch.object(engine, "_record_audio_sync", return_value=None):
+    with patch("nixorb.asr.base.record_with_vad", return_value=None):
         result = await engine.record_and_transcribe()
 
     await asyncio.sleep(0.1)
@@ -73,7 +73,7 @@ async def test_short_audio_is_discarded(engine, started_bus):
     """Sub-300ms captures are noise, not speech."""
     engine._model = object()
     tiny = np.zeros(100, dtype=np.float32)
-    with patch.object(engine, "_record_audio_sync", return_value=tiny):
+    with patch("nixorb.asr.base.record_with_vad", return_value=tiny):
         assert await engine.record_and_transcribe() is None
 
 
@@ -90,7 +90,7 @@ async def test_missing_faster_whisper_is_a_clear_error(engine):
 
     with patch.object(builtins, "__import__", _no_faster_whisper):
         with pytest.raises(RuntimeError, match="faster-whisper is not installed"):
-            engine._load_model()
+            engine._load()
 
 
 async def test_load_model_falls_back_to_cpu(engine):
@@ -107,7 +107,7 @@ async def test_load_model_falls_back_to_cpu(engine):
     fake_module.WhisperModel = _FakeModel
 
     with patch.dict("sys.modules", {"faster_whisper": fake_module}):
-        model = engine._load_model()
+        model = engine._load()
 
     assert attempts == ["cuda", "cpu"]
     assert isinstance(model, _FakeModel)

@@ -15,6 +15,7 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Desktop Environment",
     "License :: OSI Approved :: MIT License",
 ]
@@ -50,7 +51,11 @@ dependencies = [
     # torch torchaudio` for CPU/whatever your platform resolves by
     # default — matching the ordering install.sh/install.fish and
     # .github/workflows/ci.yml already use.
-    "transformers>=4.44.0",
+    # >= 5.13, not 4.x: that is where Nemotron3_5Asr landed, and the default
+    # asr_model is a Nemotron checkpoint. A lower floor resolves happily and
+    # then dies inside from_pretrained with an unrecognised-architecture
+    # error, which tells the user nothing about what to fix.
+    "transformers>=5.13.0",
     "accelerate>=0.33.0",
     "huggingface_hub>=0.24.0",
     # GGUF models via llama.cpp — needed for llm_backend="huggingface" when
@@ -94,6 +99,30 @@ wakeword = ["openwakeword>=0.6.0"]
 # Any OpenAI-compatible endpoint (real OpenAI, or a local vLLM / TGI /
 # LM Studio / llama.cpp server) — llm_backend="openai" or tts_backend="openai".
 openai = ["openai>=1.40.0"]
+
+# Extras on top of the base HF stack: SpeechT5 speaker x-vectors live in a
+# dataset repo, and several tokenizers need sentencepiece/protobuf.
+hf = [
+    "torch>=2.2",
+    "sentencepiece>=0.2",
+    "protobuf>=4.25",
+    "datasets>=2.19",
+]
+
+# NVIDIA Nemotron 3.5 ASR. transformers >= 5.13 is already the base floor;
+# this exists so the requirement is stated where people look for it.
+nemotron = [
+    "transformers>=5.13",
+    "torch>=2.2",
+    "soundfile>=0.12.1",
+]
+
+# 4-bit quantisation, so a larger transformers model fits beside ASR on 8 GB.
+quant = ["bitsandbytes>=0.43"]
+
+# GGUF models via llama.cpp. Already a base dependency — this extra exists
+# so the install command the backend prints when it is missing is real.
+llama_cpp = ["llama-cpp-python>=0.2.90"]
 
 # Declarative index pins so a plain `pip install .` / `uv tool install .` /
 # `uv sync` resolves the right prebuilt wheels with zero manual --index-url

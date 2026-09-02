@@ -42,6 +42,10 @@ class Settings(BaseModel):
     # instead of waiting for silence. Emits Event.ASR_PARTIAL_TRANSCRIPT.
     asr_streaming: bool = False
     asr_streaming_chunk_seconds: float = 2.5
+    # Nemotron only. Its cache-aware encoder streams natively rather than
+    # re-transcribing a rolling buffer, and this is the latency dial:
+    # right-context in 80ms frames, 0 | 3 | 6 | 13 → 80/320/560/1120 ms.
+    asr_nemotron_lookahead: int = 3
     microphone_index: int | None = None
     # Preferred input device by name substring (case-insensitive), e.g. "USB".
     # Survives reboots/replugs better than an index, which PipeWire/ALSA can
@@ -72,14 +76,23 @@ class Settings(BaseModel):
     llm_gguf_file: str = "Qwen3.8-2B-Q4_K_M.gguf"
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
+    # 4-bit quantisation for the non-GGUF (transformers) path, so a larger
+    # model fits beside ASR on 8 GB. Needs bitsandbytes: nixorb[quant].
+    llm_hf_load_in_4bit: bool = False
     # NOTE: this is a reasoning model — every response opens with a
     # <think>...</think> block per its own model card. Nothing currently
     # strips that before it's spoken/logged.
     llm_system_prompt: str = (
-        "You are NixOrb, a voice assistant running on Arch Linux with KDE Plasma 6. "
-        "You're direct, dryly funny, and don't pad your answers. "
-        "Keep responses concise unless asked for detail. "
-        "You can execute bash commands, search the web, capture the screen, and remember conversations."
+        "You are NixOrb, a voice assistant running on Arch Linux with KDE "
+        "Plasma 6. You're direct, dryly funny, and don't pad your answers. "
+        "Your reply is read aloud, so answer the way a person would out "
+        "loud: one or two short sentences, the answer first, no preamble, "
+        "no markdown, no bullet lists, no code blocks unless asked. Spell "
+        "out numbers and units the way you would say them. If you need to "
+        "run a shell command, put it in <ACTION>…</ACTION> and say briefly "
+        "what you are doing. Only give a long answer when asked for detail. "
+        "You can execute bash commands, search the web, capture the screen, "
+        "and remember conversations."
     )
     llm_max_tokens: int = 512
     llm_temperature: float = 0.7
@@ -99,6 +112,12 @@ class Settings(BaseModel):
     # NOTE: Breeze-TTS-2 needs ~7.7 GB VRAM minimum (12 GB recommended per its
     # own card) — confirm this actually fits your card before relying on it.
     tts_hf_repo: str = "BreezeBlue/Breeze-TTS-2"
+    # SpeechT5 needs a speaker x-vector: a .npy path, a cmu-arctic-xvectors
+    # index, or blank for the default voice. Ignored by other models.
+    tts_hf_speaker: str = ""
+    # Speak each sentence as the model produces it, rather than waiting for
+    # the whole answer. This is most of what makes the orb feel responsive.
+    tts_streaming: bool = True
 
     # ── Wake Word ────────────────────────────────────────────────── #
     # openwakeword ships as the optional "wakeword" extra, so this stays
@@ -113,6 +132,25 @@ class Settings(BaseModel):
     # "~/.local/share/nixorb/wakeword/hey_nixorb.onnx,~/.local/share/nixorb/wakeword/nixorb.onnx".
     wake_word_model: str = "hey_nixorb"
     wake_word_sensitivity: float = 0.5
+
+    # ── Conversation ─────────────────────────────────────────────── #
+    # Triggering while the orb is talking stops it and starts listening,
+    # rather than queueing behind the current answer.
+    barge_in: bool = True
+    # After answering, keep listening this long for a follow-up without
+    # needing the hotkey again. 0 disables it.
+    follow_up_seconds: float = 6.0
+    # Cap spoken replies when tts_streaming is off.
+    tts_max_sentences: int = 6
+
+    # ── Hugging Face ─────────────────────────────────────────────── #
+    # "auto" | "cuda" | "cpu"
+    hf_device: str = "auto"
+    # Override the model cache location (default: ~/.cache/huggingface).
+    hf_cache_dir: str = ""
+    # Off by default: this executes Python from the model repo. Some models
+    # (custom architectures) do not load without it.
+    hf_trust_remote_code: bool = False
 
     # ── Features ─────────────────────────────────────────────────── #
     screen_capture_enabled: bool = True

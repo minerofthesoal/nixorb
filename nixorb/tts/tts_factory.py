@@ -1,44 +1,84 @@
-"""nixorb/tts/tts_factory.py — Build the correct TTS backend from settings."""
+"""Build the TTS backend named by settings.
+
+    tts_backend = "piper"        # offline, AUR piper-tts, espeak fallback
+    tts_backend = "huggingface"  # any TTS model on the Hub
+    tts_backend = "glados"       # the GLaDOS voice, via SpeechT5
+    tts_backend = "openai"       # any OpenAI-compatible speech endpoint
+    tts_backend = "espeak"       # force the always-available fallback
+"""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import logging
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from nixorb.settings import Settings
 
+log = logging.getLogger(__name__)
 
-def build_tts(settings: Settings):
+_ALIASES = {"hf": "huggingface", "transformers": "huggingface",
+            "espeak-ng": "espeak", "piper-tts": "piper"}
+
+BACKENDS = ("piper", "huggingface", "glados", "openai", "espeak")
+
+
+def normalise_backend(name: str | None) -> str:
+    key = (name or "piper").strip().lower()
+    return _ALIASES.get(key, key)
+
+
+def build_tts(settings: Settings) -> Any:
+    """Build the configured TTS engine.
+
+    Falls back to Piper (which itself falls back to espeak-ng) whenever the
+    chosen backend cannot run, so the orb is never silently mute.
     """
-    Factory: return the appropriate TTS backend based on settings.
-
-    Backends:
-      huggingface  — HuggingFaceTTS (SpeechT5, Parler, etc.)
-      glados       — GladosTTS (torphix/stablelm-2-glados-v1 voice)
-      openai       — OpenAITTS (alloy, nova, echo, shimmer, fable, onyx)
-      piper        — PiperTTS (fully offline, Piper binary)
-    """
-    backend = settings.tts_backend.lower()
-
-    if backend == "glados":
-        from nixorb.tts.glados_tts import GladosTTS
-        return GladosTTS(settings)
-
-    if backend == "openai":
-        from nixorb.tts.openai_tts import OpenAITTS
-        return OpenAITTS(settings)
-
-    # "espeak-ng" is a settings-UI choice, not a distinct engine: PiperTTS
-    # already falls back to espeak-ng automatically when the piper binary
-    # or voice model isn't available, so both names route to it. Routing
-    # "espeak-ng" to HuggingFaceTTS instead (the old unconditional default)
-    # would raise ValueError, since that backend requires tts_hf_repo.
-    if backend in ("piper", "espeak-ng", "espeak"):
-        from nixorb.tts.piper_tts import PiperTTS
-        return PiperTTS(settings)
+    backend = normalise_backend(getattr(settings, "tts_backend", None))
 
     if backend == "huggingface":
         from nixorb.tts.hf_tts import HuggingFaceTTS
-        return HuggingFaceTTS(settings)
+
+        hf_engine = HuggingFaceTTS(settings)
+        if hf_engine.available:
+            return hf_engine
+        log.warning(
+            "TTS: huggingface backend selected but transformers is not "
+            "installed — falling back to piper. Install with: "
+            "pip install 'nixorb[hf]'"
+        )
+        backend = "piper"
+
+    if backend == "glados":
+        try:
+            from nixorb.tts.glados_tts import GladosTTS
+
+            return GladosTTS(settings)
+        except Exception as exc:
+            log.warning("TTS: glados backend unavailable (%s) — using piper", exc)
+            backend = "piper"
+
+    if backend == "openai":
+        try:
+            from nixorb.tts.openai_tts import OpenAITTS
+
+            return OpenAITTS(settings)
+        except Exception as exc:
+            log.warning("TTS: openai backend unavailable (%s) — using piper", exc)
+            backend = "piper"
+
+    if backend not in ("piper", "espeak"):
+        log.warning(
+            "TTS: unknown tts_backend '%s' (choose one of %s) — using piper",
+            getattr(settings, "tts_backend", None), ", ".join(BACKENDS),
+        )
 
     from nixorb.tts.piper_tts import PiperTTS
-    return PiperTTS(settings)
+
+    piper = PiperTTS(settings)
+    if backend == "espeak":
+        # Skip Piper even if installed; the user asked for espeak.
+        piper._piper_available = False
+    return piper
+
+
+create_tts = build_tts
