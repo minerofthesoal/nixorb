@@ -1,3 +1,54 @@
+## [2.0.7] — 2026-09-02
+
+A torch install whose halves came from different builds made every turn
+die. Nothing in the error mentioned torch.
+
+### Fixed
+
+- **A broken torchaudio killed the assistant for the whole session.**
+  `transformers>=5` imports torchaudio at module scope from `audio_utils`,
+  so `AutoProcessor.from_pretrained` raised
+
+  ```
+  ImportError: libcudart.so.12: cannot open shared object file
+  ```
+
+  before reading a single sample. That escaped `preload()`, main logged
+  `✗ Turn failed`, and it happened identically on every trigger afterwards
+  — the orb was deaf until restarted, with a message naming a `.so` and
+  nothing else.
+
+  An ASR backend that cannot load now hands over to faster-whisper, which
+  is a base dependency running on CTranslate2 — no torch, no torchaudio —
+  and logs what actually broke plus the command that fixes it. The
+  fallback runs once, not once per turn, and re-raises when there is
+  genuinely nothing better to run.
+- **`HFASREngine` advertised streaming it did not implement.** It sets
+  `supports_streaming = True`, and main calls `stream_transcribe()` on that
+  basis, but the method did not exist — so `asr_backend = "huggingface"`
+  with `asr_streaming = true` died on an AttributeError every turn.
+- **The installers pinned a torch with no wheels for Python 3.14.**
+  `torch==2.7.1+cu118` stops at cp313, so on 3.14 the torch step failed and
+  left torch to be installed by hand — which is exactly how the two halves
+  come to disagree. Both installers now pick a build that exists for the
+  running interpreter, and always take torch and torchaudio from the same
+  index. `install.sh`'s CPU branch used a bare `pip install torch
+  torchaudio`, which on Linux fetches the CUDA build; it now names the CPU
+  index.
+
+### Added
+
+- **`nixorb check` probes torch and torchaudio**, reporting each one's
+  version and CUDA flavour, and explaining a native-library failure instead
+  of echoing the linker:
+
+  ```
+  ✅ torch 2.13.0+cu126 (CUDA 12.6)
+  ❌ torchaudio is installed but will not import: libcudart.so.12: cannot open shared object file
+       torch/torchaudio cannot load its native libraries (libcudart.so.12 is missing).
+       That means the two came from different builds…
+  ```
+
 ## [2.0.6] — 2026-09-02
 
 > Numbered 2.0.6, not 0.3.4. Release artifacts take their version from the

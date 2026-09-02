@@ -252,6 +252,8 @@ and whether the configured model is installed.
 | Nemotron has no streaming | Needs `transformers >= 5.13`: `pip install 'nixorb[nemotron]'`. |
 | pip prints `dependency conflicts` naming `transformers` | Another project in the same interpreter pins an older `transformers` than NixOrb's `>= 5.13`. They cannot share one; `nixorb check` names it. Put NixOrb in its own virtualenv. |
 | It forgets everything between sessions | ChromaDB failed to load — `nixorb check`, then the log line starting `Memory:`. |
+| `Turn failed: libcudart.so.12: cannot open shared object file` | torch and torchaudio came from different builds. `transformers>=5` imports torchaudio, so this kills model loading. Reinstall both from one index: `pip install --force-reinstall torch torchaudio --index-url https://download.pytorch.org/whl/cpu` (or `…/whl/cu128`). `nixorb check` shows which build you have. |
+| Speech recognition quietly switched to faster-whisper | The configured backend could not load; the log line starting `ASR:` says why. It keeps listening rather than failing every turn. |
 | Out of VRAM with an HF LLM | `llm_hf_load_in_4bit = true` (`pip install 'nixorb[quant]'`), or `hf_device = "cpu"`. |
 | Actions do nothing when run as root | NixOrb disables command execution as root — run it as your normal user. |
 

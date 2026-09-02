@@ -23,6 +23,7 @@ from nixorb.envcheck import (
     read_environment,
     report,
     scan,
+    torch_report,
 )
 
 
@@ -233,3 +234,77 @@ class TestLiveEnvironment:
         assert "llamafactory" in text
         assert "do not overlap" in text
         assert "python -m venv" in text
+
+
+class TestTorchReport:
+    """torch is not a declared dependency, so absence is a note, not a fault.
+
+    A torch stack whose halves came from different indexes is the fault:
+    transformers>=5 imports torchaudio at module scope, so it takes down
+    model loading with a linker error naming only a `.so`.
+    """
+
+    def test_missing_torch_is_a_note_not_a_failure(self, monkeypatch):
+        import builtins
+
+        real_import = builtins.__import__
+
+        def blocked(name, *args, **kwargs):
+            if name in ("torch", "torchaudio"):
+                raise ImportError(f"No module named '{name}'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", blocked)
+        lines = torch_report()
+        assert len(lines) == 2
+        assert all("not installed" in line for line in lines)
+        assert not any("❌" in line for line in lines)
+
+    def test_a_broken_torchaudio_is_reported_with_the_fix(self, monkeypatch):
+        import builtins
+
+        real_import = builtins.__import__
+
+        class _Torch:
+            __version__ = "2.13.0+cu126"
+
+            class version:
+                cuda = "12.6"
+
+        def half_broken(name, *args, **kwargs):
+            if name == "torch":
+                return _Torch
+            if name == "torchaudio":
+                raise ImportError(
+                    "libcudart.so.12: cannot open shared object file: "
+                    "No such file or directory"
+                )
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", half_broken)
+        text = "\n".join(torch_report())
+        assert "torch 2.13.0+cu126 (CUDA 12.6)" in text
+        assert "torchaudio is installed but will not import" in text
+        assert "libcudart.so.12" in text
+        assert "download.pytorch.org" in text
+
+    def test_a_healthy_cpu_stack_reports_cpu(self, monkeypatch):
+        import builtins
+
+        real_import = builtins.__import__
+
+        class _Mod:
+            __version__ = "2.13.0+cpu"
+
+            class version:
+                cuda = None
+
+        monkeypatch.setattr(
+            builtins,
+            "__import__",
+            lambda name, *a, **k: _Mod if name in ("torch", "torchaudio")
+            else real_import(name, *a, **k),
+        )
+        text = "\n".join(torch_report())
+        assert text.count("(CPU)") == 2
+        assert "❌" not in text

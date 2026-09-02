@@ -269,6 +269,42 @@ def problems() -> list[str]:
     return lines
 
 
+def torch_report() -> list[str]:
+    """Whether torch and torchaudio import, and which CUDA build they are.
+
+    Worth its own section because the failure is invisible until a turn
+    runs: transformers>=5 imports torchaudio at module scope, so a torch
+    stack whose halves came from different indexes takes down
+    `AutoProcessor.from_pretrained` with a linker error naming a `.so` and
+    nothing else. torch is deliberately not a declared dependency — no one
+    build is right for every machine — so absence is a note, not a failure.
+    """
+    from nixorb.hf import describe_native_import_error
+
+    lines: list[str] = []
+    for name in ("torch", "torchaudio"):
+        try:
+            module = __import__(name)
+        except ImportError as exc:
+            advice = describe_native_import_error(exc)
+            if advice is None:
+                lines.append(f"  ⚠️  {name} is not installed")
+                continue
+            lines.append(f"  ❌ {name} is installed but will not import: {exc}")
+            lines.extend(f"       {line}" for line in advice.splitlines())
+            continue
+        except Exception as exc:  # a broken build can raise almost anything
+            lines.append(f"  ❌ {name} failed to import: {exc}")
+            continue
+
+        version = getattr(module, "__version__", "?")
+        cuda = getattr(getattr(module, "version", None), "cuda", None)
+        flavour = f"CUDA {cuda}" if cuda else "CPU"
+        lines.append(f"  ✅ {name} {version} ({flavour})")
+
+    return lines
+
+
 def report() -> list[str]:
     """Human-readable environment lines for `nixorb check`."""
     import platform
@@ -297,5 +333,7 @@ def report() -> list[str]:
         )
     if not unsatisfied and not conflicts:
         lines.append("  ✅ No dependency conflicts with other installed packages")
+
+    lines.extend(torch_report())
 
     return lines

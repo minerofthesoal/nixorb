@@ -1,4 +1,13 @@
 # Install PyTorch with CUDA 11.8 (GTX 1080)
 # pip install -r requirements-cuda.txt --index-url https://download.pytorch.org/whl/cu118
+#
+# Python 3.13 and older only: torch 2.7.1 ships no cp314 wheels, and cu118
+# builds stop before the releases that do. On 3.14 take the current CUDA
+# release instead — both packages from the same index, always:
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
+#
+# Never install torch and torchaudio from different indexes. It resolves
+# fine and then fails at the dynamic linker the first time a model loads,
+# with a message naming a missing .so and nothing about torch.
 torch==2.7.1+cu118
 torchaudio==2.7.1+cu118

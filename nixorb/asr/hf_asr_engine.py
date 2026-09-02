@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -78,6 +79,8 @@ class HFASREngine:
         )
         self._pipe: Any = None
         self._recording = False
+        #: Set when this engine failed to load and faster-whisper took over.
+        self._delegate: Any = None
         self._audio_buffer: list[np.ndarray] = []
         self._buffer_lock = threading.Lock()
         self._partial_busy = threading.Event()
@@ -85,7 +88,16 @@ class HFASREngine:
 
     @property
     def is_loaded(self) -> bool:
+        if self._delegate is not None:
+            return bool(self._delegate.is_loaded)
         return self._pipe is not None
+
+    @property
+    def active_name(self) -> str:
+        """The engine actually doing the work — not always this one."""
+        if self._delegate is not None:
+            return str(getattr(self._delegate, "active_name", self._delegate.name))
+        return self.name
 
     # ── model lifecycle ─────────────────────────────────────────── #
 
@@ -137,13 +149,38 @@ class HFASREngine:
         log.info("ASR: HuggingFace model unloaded")
 
     async def preload(self) -> None:
-        if self._pipe is not None:
+        if self._delegate is not None or self._pipe is not None:
             return
         loop = asyncio.get_running_loop()
-        self._pipe = await loop.run_in_executor(None, self._load_pipeline)
+        try:
+            self._pipe = await loop.run_in_executor(None, self._load_pipeline)
+        except Exception as exc:
+            # transformers>=5 imports torchaudio at module scope, so a torch
+            # install whose pieces disagree takes this engine down before it
+            # sees a single sample. Keep the assistant hearing.
+            from nixorb.asr.base import build_whisper_fallback
+
+            delegate = build_whisper_fallback(self._settings, self.name, exc)
+            if delegate is None:
+                raise
+            self._delegate = delegate
+            try:
+                await delegate.preload()
+            except Exception as fallback_exc:
+                self._delegate = None
+                log.error(
+                    "ASR: faster-whisper could not stand in either: %s",
+                    fallback_exc,
+                )
+                raise exc from fallback_exc
+            return
         await bus.emit(Event.ASR_READY, source="HFASREngine")
 
     async def unload(self) -> None:
+        if self._delegate is not None:
+            delegate, self._delegate = self._delegate, None
+            await delegate.unload()
+            return
         if self._pipe is not None:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._unload_pipeline, self._pipe)
@@ -151,6 +188,8 @@ class HFASREngine:
 
     def stop_recording(self) -> None:
         self._recording = False
+        if self._delegate is not None:
+            self._delegate.stop_recording()
 
     # ── transcription ───────────────────────────────────────────── #
 
@@ -310,8 +349,10 @@ class HFASREngine:
 
     async def record_and_transcribe(self) -> str | None:
         """Record audio and return transcript. Full pipeline."""
-        if self._pipe is None:
+        if self._delegate is None and self._pipe is None:
             await self.preload()
+        if self._delegate is not None:
+            return await self._delegate.record_and_transcribe()
 
         await bus.emit(Event.RECORDING_START, source="HFASREngine")
 
@@ -343,3 +384,24 @@ class HFASREngine:
                 Event.ASR_ERROR, data={"error": str(exc)}, source="HFASREngine"
             )
             return None
+
+    async def stream_transcribe(self) -> AsyncIterator[str]:
+        """Yield the transcript once recording ends.
+
+        This engine has no native streaming API — its partials come from
+        re-transcribing a rolling buffer and go out on the bus as
+        ASR_PARTIAL, not through this iterator. It still has to exist:
+        `supports_streaming` is True, so main calls this whenever
+        asr_streaming is on, and without it the turn died on an
+        AttributeError.
+        """
+        if self._delegate is None and self._pipe is None:
+            await self.preload()
+        if self._delegate is not None:
+            async for partial in self._delegate.stream_transcribe():
+                yield partial
+            return
+
+        text = await self.record_and_transcribe()
+        if text:
+            yield text

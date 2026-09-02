@@ -63,13 +63,30 @@ end
 source .venv/bin/activate.fish
 echo "  venv activated"
 
-# ── 3. PyTorch with CUDA 11.8 ──────────────────────────────────────── #
+# ── 3. PyTorch ─────────────────────────────────────────────────────── #
+#
+# torch and torchaudio ALWAYS come from one index. Mixing them installs
+# cleanly and then fails at the dynamic linker the first time a model
+# loads, naming only a missing .so ("libcudart.so.12: cannot open shared
+# object file") and nothing about torch.
+#
+# The cu118 pin is this project's GTX 1080 target, but those wheels stop at
+# cp313 — torch 2.7.1 has no 3.14 build — so newer interpreters take the
+# current CUDA 12.8 release rather than failing here and leaving torch to
+# be installed by hand, which is how the halves come to disagree.
 echo ""
-echo "==> [3/7] Installing PyTorch (CUDA 11.8)..."
-pip install --quiet \
-    "torch==2.7.1+cu118" \
-    "torchaudio==2.7.1+cu118" \
-    --index-url https://download.pytorch.org/whl/cu118
+set PY_MINOR (python -c 'import sys; print(sys.version_info[1])')
+
+if test "$PY_MINOR" -le 13
+    set TORCH_INDEX https://download.pytorch.org/whl/cu118
+    set TORCH_SPEC "torch==2.7.1+cu118" "torchaudio==2.7.1+cu118"
+else
+    set TORCH_INDEX https://download.pytorch.org/whl/cu128
+    set TORCH_SPEC torch torchaudio
+end
+
+echo "==> [3/7] Installing PyTorch from $TORCH_INDEX..."
+pip install --quiet $TORCH_SPEC --index-url $TORCH_INDEX
 echo "  PyTorch installed"
 
 # llama-cpp-python compiles from source by default (several minutes). The

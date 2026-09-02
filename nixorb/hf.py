@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -17,6 +18,48 @@ _TOKEN_ENV = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACEHUB_API_TOKEN")
 
 class MissingDependency(RuntimeError):
     """A backend was selected whose Python package is not installed."""
+
+
+# A torch stack whose pieces come from different builds fails at the dynamic
+# linker, not in Python, so the message names a .so nobody recognises and
+# nothing about torch. transformers>=5 imports torchaudio from
+# `audio_utils` at module scope, so a broken torchaudio takes down
+# AutoProcessor.from_pretrained — and with it the whole turn.
+_NATIVE_MARKERS = (
+    "cannot open shared object file",
+    "undefined symbol",
+    "libcudart",
+    "libcudnn",
+    "libcublas",
+    "libtorch",
+    "libc10",
+)
+
+_SHARED_OBJECT = re.compile(r"(lib[\w.+-]*\.so[\w.]*)")
+
+
+def describe_native_import_error(exc: BaseException) -> str | None:
+    """Explain a torch/torchaudio native-library failure, or return None.
+
+    None means this is not one — the caller should report the original
+    error rather than guess.
+    """
+    text = str(exc)
+    if not any(marker in text.lower() for marker in _NATIVE_MARKERS):
+        return None
+
+    match = _SHARED_OBJECT.search(text)
+    missing = f" ({match.group(1)} is missing)" if match else ""
+    return (
+        f"torch/torchaudio cannot load its native libraries{missing}. That "
+        "means the two came from different builds — a CUDA torchaudio beside "
+        "a CPU or differently-versioned torch. Reinstall both together from "
+        "one index:\n"
+        "  pip install --force-reinstall torch torchaudio "
+        "--index-url https://download.pytorch.org/whl/cpu\n"
+        "or the CUDA build matching your driver (…/whl/cu126, …/whl/cu128). "
+        "`nixorb check` reports which one you have."
+    )
 
 
 def require(module: str, extra: str = "hf") -> Any:
