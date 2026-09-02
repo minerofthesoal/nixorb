@@ -58,6 +58,12 @@ _LEFTOVER_MARKERS = (
 
 _SHARED_OBJECT = re.compile(r"([\w./+-]*\.so[\w.]*)")
 
+_TORCH_INSTALL = (
+    "pip install torch torchaudio "
+    "--index-url https://download.pytorch.org/whl/cpu   "
+    "# or …/whl/cu128 for CUDA"
+)
+
 _PURGE_ADVICE = (
     "  pip uninstall -y torchaudio\n"
     "  rm -rf <site-packages>/torchaudio\n"
@@ -146,18 +152,96 @@ def duplicate_extensions(package: str = "torchaudio") -> list[str]:
     return found if len(found) > 1 else []
 
 
-def require(module: str, extra: str = "hf") -> Any:
-    """Import a module, or explain how to install it.
+# What actually installs each module a backend can be missing. torch is
+# deliberately not one of this project's dependencies — no single build is
+# right for every machine — so it must never be routed to a NixOrb extra;
+# `pip install nixorb[hf]` would not put it there.
+_INSTALL_COMMANDS = {
+    "torch": _TORCH_INSTALL,
+    "torchaudio": _TORCH_INSTALL,
+    "torchvision": _TORCH_INSTALL,
+    "llama_cpp": "pip install 'nixorb[llama_cpp]'",
+    "bitsandbytes": "pip install 'nixorb[quant]'",
+    "openwakeword": "pip install 'nixorb[wakeword]'",
+    "openai": "pip install 'nixorb[openai]'",
+    "faster_whisper": "pip install faster-whisper",
+    "chromadb": "pip install chromadb",
+}
 
-    A bare ImportError from four levels down tells the user nothing; this
-    turns it into the pip command that fixes it.
+
+def install_command(module: str, extra: str = "hf") -> str:
+    """The command that actually installs `module`."""
+    return _INSTALL_COMMANDS.get(
+        module.split(".")[0], f"pip install 'nixorb[{extra}]'"
+    )
+
+
+def is_installed(module: str) -> bool:
+    """Is the module present on disk?
+
+    find_spec, not import: a package that exists and then explodes still
+    counts as installed. That distinction is the entire point — telling
+    somebody to install what they already have sends them in a circle.
     """
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec(module.split(".")[0]) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def explain_import_error(
+    exc: BaseException,
+    expected: str,
+    feature: str,
+    extra: str = "hf",
+) -> str:
+    """Say which module actually failed, and how to get it.
+
+    `except ImportError` around `import torch, transformers` fires when
+    either is absent, and around a lone `import transformers` it fires when
+    anything transformers imports is absent too. Naming `expected` in
+    either case blames a package that is very often already installed —
+    which is exactly what this project did, telling people to reinstall
+    transformers when torch was the missing one.
+
+    ImportError carries the module that could not be found in `.name`;
+    trust that over the caller's assumption.
+    """
+    culprit = str(getattr(exc, "name", None) or expected).split(".")[0]
+
+    native = describe_native_import_error(exc)
+    if native:
+        return (
+            f"{feature} needs {culprit}, which is installed but will not "
+            f"load.\n{native}"
+        )
+
+    if not is_installed(culprit):
+        return (
+            f"{feature} needs {culprit}, which is not installed. "
+            f"Install it with: {install_command(culprit, extra)}"
+        )
+
+    # Present but unimportable. Never suggest installing it again.
+    root = expected.split(".")[0]
+    through = f" (reached through {root})" if culprit != root else ""
+    return (
+        f"{feature} could not import {culprit}{through}, though it is "
+        f"installed: {type(exc).__name__}: {exc}"
+    )
+
+
+def require(module: str, extra: str = "hf", feature: str = "") -> Any:
+    """Import a module, or explain what is really missing and how to get it."""
     try:
         return __import__(module)
     except ImportError as exc:
         raise MissingDependency(
-            f"'{module}' is not installed, which this backend needs. "
-            f"Install it with:  pip install 'nixorb[{extra}]'"
+            explain_import_error(
+                exc, module, feature or "This backend", extra
+            )
         ) from exc
 
 

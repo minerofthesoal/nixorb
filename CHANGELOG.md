@@ -1,3 +1,55 @@
+## [2.0.9] — 2026-09-02
+
+"NixOrb says transformers isn't installed, and the command it gives me
+does nothing." Both halves were true, and both were this project's fault.
+
+### Fixed
+
+- **The wrong package got blamed.** Three backends wrapped their imports
+  like this:
+
+  ```python
+  try:
+      import torch
+      from transformers import AutoModelForCausalLM, AutoTokenizer
+  except ImportError as exc:
+      raise HuggingFaceLLMError("transformers is not installed …")
+  ```
+
+  `except ImportError` fires when *either* import fails — and around a
+  lone `from transformers import …` it fires when anything in transformers'
+  own import chain fails too. So a missing torch, or a torchaudio that will
+  not load, was reported as a missing transformers. torch is deliberately
+  not one of this project's dependencies, so it is the one most likely to
+  be absent, and the one the message least described.
+
+  `nixorb.hf.explain_import_error()` reads the module out of
+  `ImportError.name` and reports that instead, distinguishing three cases
+  that need three different answers: absent (install it, with the command
+  that actually installs *it*), present but unimportable (never "install it
+  again"), and present but broken at the linker (the torch/torchaudio
+  advice from 2.0.7–2.0.8).
+
+  ```
+  before  transformers is not installed — HuggingFace LLM backend is
+          unavailable. Install it with: pip install 'nixorb[huggingface]'
+  after   The HuggingFace LLM backend needs torch, which is not installed.
+          Install it with: pip install torch torchaudio
+          --index-url https://download.pytorch.org/whl/cpu
+  ```
+
+- **`nixorb[huggingface]` was not a real extra.** The declared ones are
+  `hf`, `nemotron`, `quant`, `wakeword`, `openai`, `llama_cpp`, `dev`. pip
+  answers an undeclared extra with a warning and installs nothing, so the
+  advice looked actionable and did nothing at all. The messages name the
+  right thing now, `huggingface` is declared as an alias for `hf` because
+  it is the obvious guess (`llm_backend = "huggingface"` is the setting),
+  and a test walks every `nixorb[…]` string in the source and fails on any
+  extra `pyproject.toml` does not declare.
+
+- The same conflation is fixed in the faster-whisper, llama-cpp-python and
+  openwakeword loaders, which had it too.
+
 ## [2.0.8] — 2026-09-02
 
 Follow-up to 2.0.7 from a second report in the field. The fallback worked;

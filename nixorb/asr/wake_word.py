@@ -129,12 +129,16 @@ class WakeWordDetector:
         try:
             import openwakeword
             from openwakeword.model import Model
-        except ImportError:
+        except ImportError as exc:
             # openwakeword is the optional "wakeword" extra, not a base
             # dependency — a missing import is a config problem, not a crash.
+            from nixorb.hf import explain_import_error
+
             log.warning(
-                "WakeWord: openwakeword is not installed — wake word disabled. "
-                "Install it with: pip install 'nixorb[wakeword]'"
+                "WakeWord: wake word disabled. %s",
+                explain_import_error(
+                    exc, "openwakeword", "The wake word", extra="wakeword"
+                ),
             )
             return None
 

@@ -52,9 +52,12 @@ class WhisperEngine(ASREngine):
         try:
             from faster_whisper import WhisperModel
         except ImportError as exc:
+            from nixorb.hf import explain_import_error
+
             raise RuntimeError(
-                "faster-whisper is not installed — speech recognition is "
-                "unavailable. Install it with: pip install faster-whisper"
+                explain_import_error(
+                    exc, "faster_whisper", "Speech recognition"
+                )
             ) from exc
 
         last_exc: Exception | None = None

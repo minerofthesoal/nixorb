@@ -77,20 +77,71 @@ async def test_short_audio_is_discarded(engine, started_bus):
         assert await engine.record_and_transcribe() is None
 
 
-async def test_missing_faster_whisper_is_a_clear_error(engine):
+async def test_missing_faster_whisper_is_a_clear_error(engine, monkeypatch):
     """A missing optional backend must say so, not raise ImportError deep down."""
     import builtins
+    import importlib.util
 
     real_import = builtins.__import__
+    real_find_spec = importlib.util.find_spec
 
     def _no_faster_whisper(name, *args, **kwargs):
         if name == "faster_whisper":
-            raise ImportError("No module named 'faster_whisper'")
+            raise ModuleNotFoundError(
+                "No module named 'faster_whisper'", name="faster_whisper"
+            )
         return real_import(name, *args, **kwargs)
 
+    # Absent means absent: gone from disk, not merely unimportable. The two
+    # cases get different messages on purpose.
+    def _gone(name, *args, **kwargs):
+        if name.split(".")[0] == "faster_whisper":
+            return None
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", _gone)
     with patch.object(builtins, "__import__", _no_faster_whisper):
-        with pytest.raises(RuntimeError, match="faster-whisper is not installed"):
+        with pytest.raises(RuntimeError, match="is not installed") as caught:
             engine._load()
+
+    message = str(caught.value)
+    assert "faster_whisper" in message
+    assert "pip install faster-whisper" in message
+
+
+async def test_an_unimportable_faster_whisper_is_not_called_missing(
+    engine, monkeypatch
+):
+    """It is on disk, so "install it" is the one thing that will not help."""
+    import builtins
+    import importlib.util
+
+    real_import = builtins.__import__
+    real_find_spec = importlib.util.find_spec
+
+    def _broken(name, *args, **kwargs):
+        if name == "faster_whisper":
+            raise ImportError(
+                "cannot import name 'WhisperModel'", name="faster_whisper"
+            )
+        return real_import(name, *args, **kwargs)
+
+    # Say it is present regardless of this environment: the case under test
+    # is "on disk but unimportable", and whether the runner happens to have
+    # faster-whisper installed must not decide which message we assert.
+    def _present(name, *args, **kwargs):
+        if name.split(".")[0] == "faster_whisper":
+            return object()
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", _present)
+    with patch.object(builtins, "__import__", _broken):
+        with pytest.raises(RuntimeError) as caught:
+            engine._load()
+
+    message = str(caught.value)
+    assert "though it is installed" in message
+    assert "pip install" not in message
 
 
 async def test_load_model_falls_back_to_cpu(engine):

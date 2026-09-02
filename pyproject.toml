@@ -109,6 +109,12 @@ hf = [
     "protobuf>=4.25",
     "datasets>=2.19",
 ]
+# The name people actually type — the setting is `llm_backend = "huggingface"`,
+# so `nixorb[huggingface]` is the natural guess, and three error messages in
+# this project used to suggest exactly that. pip answers an undeclared extra
+# with a warning and installs nothing, so the guess failed silently. Declare
+# it as an alias rather than argue with the guess.
+huggingface = ["nixorb[hf]"]
 
 # NVIDIA Nemotron 3.5 ASR. transformers >= 5.13 is already the base floor;
 # this exists so the requirement is stated where people look for it.
