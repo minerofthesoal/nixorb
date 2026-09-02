@@ -93,9 +93,10 @@ class HuggingFaceLLMBackend:
         try:
             from llama_cpp import Llama
         except ImportError as exc:
+            from nixorb.hf import explain_import_error
+
             raise HuggingFaceLLMError(
-                "llama-cpp-python is not installed — GGUF models are "
-                "unavailable. Install it with: pip install 'nixorb[llama_cpp]'"
+                explain_import_error(exc, "llama_cpp", "GGUF models")
             ) from exc
 
         n_gpu_layers = -1  # offload everything; llama.cpp falls back on OOM
@@ -135,9 +136,14 @@ class HuggingFaceLLMBackend:
             import torch
             from transformers import AutoModelForCausalLM, AutoTokenizer
         except ImportError as exc:
+            # torch is imported here too, and it is deliberately not one of
+            # this project's dependencies — so this branch blamed
+            # transformers for a missing torch, and pointed at an extra
+            # that would not have installed torch even if it existed.
+            from nixorb.hf import explain_import_error
+
             raise HuggingFaceLLMError(
-                "transformers is not installed — HuggingFace LLM backend is "
-                "unavailable. Install it with: pip install 'nixorb[huggingface]'"
+                explain_import_error(exc, "transformers", "The HuggingFace LLM backend")
             ) from exc
 
         try:
@@ -193,11 +199,14 @@ class HuggingFaceLLMBackend:
             else:
                 try:
                     import transformers  # noqa: F401
-                except ImportError:
+                except ImportError as exc:
+                    from nixorb.hf import explain_import_error
+
                     return {
                         "ok": False,
-                        "error": "transformers is not installed. Install "
-                                 "with: pip install 'nixorb[huggingface]'",
+                        "error": explain_import_error(
+                            exc, "transformers", "The HuggingFace LLM backend"
+                        ),
                         "models": [],
                     }
                 if not Path(self._model_id).exists():

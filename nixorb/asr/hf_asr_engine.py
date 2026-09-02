@@ -105,9 +105,12 @@ class HFASREngine:
         try:
             from transformers import pipeline
         except ImportError as exc:
+            # Not necessarily transformers: this fires for anything in its
+            # import chain too, torch most often. Let the error say which.
+            from nixorb.hf import explain_import_error
+
             raise RuntimeError(
-                "transformers is not installed — HuggingFace ASR is "
-                "unavailable. Install it with: pip install 'nixorb[huggingface]'"
+                explain_import_error(exc, "transformers", "HuggingFace ASR")
             ) from exc
 
         device = -1
