@@ -69,6 +69,41 @@ jobs:
           echo "tag=$TAG"            >> "$GITHUB_OUTPUT"
           echo "Resolved: package=$PACKAGE  version=$VERSION  prerelease=$PRERELEASE  tag=$TAG"
 
+      # A tag is a claim about which commit is that version. The build below
+      # rewrites __version__ from the tag, so a tag placed on the wrong
+      # commit does not fail — it publishes older code wearing a newer
+      # number, and nobody can tell from the outside. That happened:
+      # v2.0.10 and v2.0.11 were both put on the same commit, so PyPI's
+      # 2.0.11 shipped 2.0.10's code and the reporter's bug persisted
+      # through an "upgrade".
+      #
+      # So for a tag push, the commit must already say what the tag says.
+      # The rewrite then becomes a no-op safety net rather than a
+      # relabelling. workflow_dispatch is exempt: naming a version by hand
+      # is the one case where overriding the source is the intent.
+      - name: Tag must match the version in the source
+        if: github.event_name != 'workflow_dispatch'
+        run: |
+          VERSION="${{ steps.resolve.outputs.version }}"
+          IN_SOURCE=$(sed -nE 's/^__version__ = "([^"]+)".*/\1/p' nixorb/__init__.py | head -1)
+
+          if [ "$IN_SOURCE" != "$VERSION" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} is on a commit whose" \
+                 "nixorb/__init__.py says '$IN_SOURCE'. Publishing would" \
+                 "ship $IN_SOURCE's code labelled $VERSION."
+            echo "::error::Bump __version__ to $VERSION and tag that commit," \
+                 "or move the tag to the commit that already declares it."
+            exit 1
+          fi
+
+          if ! grep -q "^## \[${VERSION}\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## [${VERSION}]' section." \
+                 "A release nobody can read the notes for is not ready."
+            exit 1
+          fi
+
+          echo "✓ ${GITHUB_REF_NAME} matches __version__=$IN_SOURCE and CHANGELOG.md"
+
       # Publishes package name + the exact version you picked, linked
       # right away — visible on the workflow run page the moment the
       # release starts, before any of the builds below even finish.
@@ -105,6 +140,9 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      # A no-op for a tag push — meta has already checked they agree. It
+      # still matters for workflow_dispatch, where a version is named by
+      # hand on purpose.
       - name: Patch version
         run: |
           sed -i "s/^__version__ = .*/__version__ = \"${{ needs.meta.outputs.version }}\"/" nixorb/__init__.py

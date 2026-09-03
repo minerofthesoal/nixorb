@@ -1,3 +1,31 @@
+## [2.0.12] — 2026-09-03
+
+**PyPI's 2.0.11 is not 2.0.11.** It contains 2.0.10's code. Anyone who
+upgraded to it still has the `got 'list'` transcription bug that 2.0.11
+fixed, and `nixorb version` reports 2.0.11 while doing so. Install 2.0.12
+or later.
+
+### Fixed
+
+- **A git tag could relabel older code as a newer release.**
+  `release.yml` rewrites `nixorb/__init__.py` from the tag name, so a tag
+  on the wrong commit does not fail the build — it publishes whatever that
+  commit contains under the tag's version, and nothing downstream can tell.
+  `v2.0.10` and `v2.0.11` were both placed on commit `7fa54b8`, so the
+  published 2.0.11 wheel carries `processor.decode(output.sequences, …)`,
+  no `max_new_tokens` and no `last_error` — every 2.0.11 fix missing,
+  under a 2.0.11 version string.
+
+  A tag push is now refused unless the commit it names already declares
+  that version *and* `CHANGELOG.md` documents it. The rewrite becomes a
+  no-op safety net instead of a relabelling. `workflow_dispatch` stays
+  exempt: naming a version by hand is the one case where overriding the
+  source is the intent.
+
+- `tests/test_release_metadata.py` keeps `__version__` and the newest
+  changelog entry in agreement on every CI run, so the mismatch cannot be
+  committed, let alone tagged.
+
 ## [2.0.11] — 2026-09-03
 
 Nemotron loaded for the first time — and then every transcript failed.
