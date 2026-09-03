@@ -81,6 +81,8 @@ class HFASREngine:
         self._recording = False
         #: Set when this engine failed to load and faster-whisper took over.
         self._delegate: Any = None
+        #: Why the last attempt returned nothing — see ASREngine.last_error.
+        self.last_error: str = ""
         self._audio_buffer: list[np.ndarray] = []
         self._buffer_lock = threading.Lock()
         self._partial_busy = threading.Event()
@@ -358,9 +360,12 @@ class HFASREngine:
         if self._delegate is None and self._pipe is None:
             await self.preload()
         if self._delegate is not None:
-            return await self._delegate.record_and_transcribe()
+            transcript = await self._delegate.record_and_transcribe()
+            self.last_error = getattr(self._delegate, "last_error", "")
+            return transcript
 
         await bus.emit(Event.RECORDING_START, source="HFASREngine")
+        self.last_error = ""
 
         try:
             loop = asyncio.get_running_loop()
@@ -386,6 +391,7 @@ class HFASREngine:
 
         except Exception as exc:
             log.error("ASR: record_and_transcribe failed: %s", exc)
+            self.last_error = str(exc)
             await bus.emit(
                 Event.ASR_ERROR, data={"error": str(exc)}, source="HFASREngine"
             )

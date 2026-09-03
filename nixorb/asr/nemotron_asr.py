@@ -97,6 +97,17 @@ def split_language_tag(text: str) -> tuple[str, str | None]:
     return text[: match.start()].strip(), match.group(1)
 
 
+def token_budget(seconds: float) -> int:
+    """A generous cap on tokens for `seconds` of speech.
+
+    generate() otherwise uses a model-agnostic max_length of 640 and warns
+    about it every turn. RNN-T emits at most about one token per 80ms
+    encoder frame; 30/second plus a floor leaves plenty of headroom
+    without letting a decode run away.
+    """
+    return max(64, int(seconds * 30) + 32)
+
+
 def chunk_window(mel_frame_idx: int, hop_length: int, window: int,
                  samples_per_chunk: int) -> tuple[int, int]:
     """Sample range feeding the next streaming chunk.
@@ -289,14 +300,49 @@ class NemotronASREngine(ASREngine):
         )
         inputs = inputs.to(model.device, dtype=model.dtype)
 
-        output = model.generate(**inputs, return_dict_in_generate=True)
+        output = model.generate(
+            **inputs,
+            return_dict_in_generate=True,
+            # Without this, generate() falls back to a model-agnostic
+            # max_length of 640 and warns about it on every single turn.
+            # RNN-T emits roughly one token per 80ms frame at most, so
+            # scale the bound to how much audio there actually is.
+            max_new_tokens=token_budget(len(audio) / SAMPLE_RATE),
+        )
         # Decode with the tag intact so auto-detection is readable, then strip.
-        raw = processor.decode(output.sequences, skip_special_tokens=False)
+        raw = self._decode_sequences(processor, output.sequences)
         text, detected = split_language_tag(_strip_specials(raw))
         self._detected_language = detected
         if detected:
             log.info("ASR: detected language %s", detected)
         return text
+
+    @staticmethod
+    def _decode_sequences(processor: Any, sequences: Any) -> str:
+        """Decode one clip's tokens to text.
+
+        `generate(...).sequences` is batched — shape (batch, tokens) — and
+        `PreTrainedTokenizer.decode` routes a 2-D input to its batched
+        branch, which returns a *list* of strings, one per row. Handing
+        that straight to a regex is where
+
+            ASR: nemotron failed: expected string or bytes-like object,
+            got 'list'
+
+        came from. Ask for the batch explicitly and take our one row.
+        """
+        batch_decode = getattr(processor, "batch_decode", None)
+        if callable(batch_decode):
+            decoded = batch_decode(sequences, skip_special_tokens=False)
+        else:
+            decoded = processor.decode(sequences, skip_special_tokens=False)
+
+        # Unwrap however deeply it nested; an empty batch means no speech.
+        while isinstance(decoded, (list, tuple)):
+            if not decoded:
+                return ""
+            decoded = decoded[0]
+        return str(decoded)
 
     @staticmethod
     def _sampling_rate(processor: Any) -> int:
@@ -507,6 +553,7 @@ __all__ = [
     "MIN_SPEECH_SECONDS",
     "NemotronASREngine",
     "chunk_window",
+    "token_budget",
     "feature_window",
     "normalise_language",
     "record_with_vad",

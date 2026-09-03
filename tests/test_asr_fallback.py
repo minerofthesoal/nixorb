@@ -186,6 +186,7 @@ class _Stub:
         self.unloaded = False
         self.stopped = False
         self.is_loaded = False
+        self.last_error = ""
 
     @property
     def active_name(self):
