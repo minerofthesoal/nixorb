@@ -244,6 +244,33 @@ class TestPreloadFallback:
         await engine.record_and_transcribe()
         assert engine.load_attempts == 1
 
+    async def test_the_decision_survives_an_unload(self, stub):
+        # main unloads ASR after every turn to free memory. Dropping the
+        # stand-in there made the next turn re-run a load already known to
+        # fail, re-log the whole explanation, and rebuild the stand-in —
+        # which is what the field log showed, once per turn.
+        engine = _Broken(Settings(), ImportError(LIBCUDART))
+        await engine.preload()
+        first = engine._delegate
+
+        await engine.unload()
+        assert stub.unloaded
+        assert engine._delegate is first, "the stand-in was thrown away"
+
+        await engine.record_and_transcribe()
+        assert engine.load_attempts == 1
+        assert engine._delegate is first, "a second stand-in was built"
+
+    async def test_an_unloaded_stand_in_is_reloaded_not_rebuilt(self, stub):
+        engine = _Broken(Settings(), ImportError(LIBCUDART))
+        await engine.preload()
+        await engine.unload()
+        assert not stub.is_loaded
+
+        await engine.preload()
+        assert stub.is_loaded
+        assert engine.is_loaded
+
     async def test_stop_and_unload_reach_the_stand_in(self, stub):
         engine = _Broken(Settings(), ImportError(LIBCUDART))
         await engine.preload()

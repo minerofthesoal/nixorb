@@ -367,9 +367,14 @@ class TestTorchReportLeftovers:
             "find_spec",
             lambda name: _Spec() if name == "torchaudio" else None,
         )
+        # The loader names the offending file in its own message, which is
+        # where the directory to delete is derived from.
         self._broken(
             monkeypatch,
-            OSError("Could not load this library: /x/torchaudio/lib/_torchaudio.so"),
+            OSError(
+                "Could not load this library: "
+                f"{tmp_path / 'torchaudio' / 'lib' / '_torchaudio.so'}"
+            ),
         )
         text = "\n".join(torch_report())
         assert "2 extension files where there should be one" in text

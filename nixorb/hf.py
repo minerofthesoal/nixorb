@@ -64,11 +64,41 @@ _TORCH_INSTALL = (
     "# or …/whl/cu128 for CUDA"
 )
 
-_PURGE_ADVICE = (
-    "  pip uninstall -y torchaudio\n"
-    "  rm -rf <site-packages>/torchaudio\n"
-    "  pip install torchaudio --index-url https://download.pytorch.org/whl/cpu"
-)
+def package_directory(package: str = "torchaudio", hint: str = "") -> str:
+    """Where `package` is actually installed, for a command to name.
+
+    A path out of the error message is the most reliable source — the
+    loader was there. find_spec is the fallback, and does not run the
+    package's __init__, so it works when importing is what failed.
+    """
+    from pathlib import Path
+
+    for parent in Path(hint).parents if hint else ():
+        if parent.name == package:
+            return str(parent)
+
+    try:
+        import importlib.util
+
+        spec = importlib.util.find_spec(package)
+    except Exception:
+        spec = None
+    locations = list(getattr(spec, "submodule_search_locations", None) or [])
+    if locations:
+        return str(locations[0])
+
+    return f"<site-packages>/{package}"
+
+
+def purge_advice(hint: str = "", package: str = "torchaudio") -> str:
+    """The three commands that actually clear a leftover extension."""
+    return (
+        f"  pip uninstall -y {package}\n"
+        f"  rm -rf {package_directory(package, hint)}\n"
+        f"  pip install {package} "
+        "--index-url https://download.pytorch.org/whl/cpu"
+    )
+
 
 # Worth saying out loud: nothing in NixOrb imports torchaudio, and
 # transformers skips it when the package is absent. Uninstalling it and
@@ -100,7 +130,7 @@ def describe_native_import_error(exc: BaseException) -> str | None:
             "finds two and refuses to choose. --force-reinstall does not "
             "clear it, because pip only removes what the current release's "
             "RECORD lists. Delete the directory and install again:\n"
-            f"{_PURGE_ADVICE}\n"
+            f"{purge_advice(library)}\n"
             f"{_OPTIONAL_NOTE}"
         )
 

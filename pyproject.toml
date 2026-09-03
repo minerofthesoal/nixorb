@@ -69,6 +69,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    # llama.cpp's own GGUF writer — tests/test_gguf_probe.py builds real
+    # files with it rather than hand-rolling bytes, since a reader tested
+    # only against its own encoder proves nothing about the real format.
+    "gguf>=0.10",
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
     "pytest-aiohttp>=1.0",

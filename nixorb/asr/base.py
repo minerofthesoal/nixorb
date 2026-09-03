@@ -282,7 +282,12 @@ class ASREngine(ABC):
 
     async def preload(self) -> None:
         """Load the model into memory, off the event loop."""
-        if self._delegate is not None or self._model is not None:
+        if self._delegate is not None:
+            # A stand-in owns loading now. Retrying our own _load would
+            # fail exactly as it did the first time.
+            await self._delegate.preload()
+            return
+        if self._model is not None:
             return
         try:
             self._model = await asyncio.to_thread(self._load)
@@ -311,8 +316,12 @@ class ASREngine(ABC):
 
     async def unload(self) -> None:
         if self._delegate is not None:
-            delegate, self._delegate = self._delegate, None
-            await delegate.unload()
+            # Unload its model, but KEEP the stand-in. Whether this backend
+            # can load is a property of the installation, not of this turn;
+            # dropping the delegate here made every turn re-run a load
+            # already known to fail, re-log the whole explanation, and
+            # rebuild the stand-in from scratch.
+            await self._delegate.unload()
             return
         if self._model is None:
             return

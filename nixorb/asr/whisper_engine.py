@@ -60,8 +60,17 @@ class WhisperEngine(ASREngine):
                 )
             ) from exc
 
+        # Only try CUDA when there is a CUDA device. Attempting it blindly
+        # logs a WARNING about int8_float16 on every single load of every
+        # CPU-only machine, which reads as a fault and is not one.
+        from nixorb.hf import resolve_device
+
+        attempts: tuple[tuple[str, str], ...] = _DEVICE_ATTEMPTS
+        if resolve_device("auto") != "cuda":
+            attempts = tuple(a for a in _DEVICE_ATTEMPTS if a[0] != "cuda")
+
         last_exc: Exception | None = None
-        for device, compute_type in _DEVICE_ATTEMPTS:
+        for device, compute_type in attempts:
             try:
                 log.info(
                     "ASR: loading Whisper %s (%s, %s)",
