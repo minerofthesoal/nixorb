@@ -1,3 +1,28 @@
+## [2.0.11] — 2026-09-03
+
+Nemotron loaded for the first time — and then every transcript failed.
+
+### Fixed
+
+- **`ASR: nemotron failed: expected string or bytes-like object, got 'list'`**
+  — every turn, on the native backend. `generate(...).sequences` is
+  batched, shape `(batch, tokens)`, and `PreTrainedTokenizer.decode`
+  routes a 2-D input to its batched branch, which returns a *list* of
+  strings, one per row. That list went straight into the regex that
+  strips special tokens. It now asks for the batch explicitly and takes
+  the one row, and copes with a processor that predates `batch_decode`.
+
+- **A crash was reported to the user as silence.** `record_and_transcribe`
+  returns None both when the room was quiet and when the model blew up,
+  so main said "No speech detected" for both — hiding the fault above
+  behind a normal outcome. Engines now record `last_error`, and main
+  distinguishes them.
+
+- **`Using the model-agnostic default max_length (=640)`** on every turn.
+  `generate()` is given a `max_new_tokens` scaled to the length of the
+  audio, which silences the warning and stops a long utterance being
+  truncated at a bound chosen for a different kind of model.
+
 ## [2.0.10] — 2026-09-03
 
 From a full startup-to-turn log. The orb, memory, wake word, IPC and the

@@ -247,6 +247,10 @@ class ASREngine(ABC):
         self._recording = False
         #: Set when this engine failed to load and another took over.
         self._delegate: ASREngine | None = None
+        #: Why the last attempt returned nothing, or "" if it was silence.
+        #: Callers cannot tell those apart from a None return alone, and
+        #: reporting a crash as "No speech detected" hides real faults.
+        self.last_error: str = ""
 
     # ── Backend hooks ────────────────────────────────────────────── #
 
@@ -341,10 +345,14 @@ class ASREngine(ABC):
         if self._delegate is None and self._model is None:
             await self.preload()
         if self._delegate is not None:
-            return await self._delegate.record_and_transcribe()
+            transcript = await self._delegate.record_and_transcribe()
+            # getattr: a stand-in need not be an ASREngine subclass.
+            self.last_error = getattr(self._delegate, "last_error", "")
+            return transcript
 
         await bus.emit(Event.RECORDING_START, source=self.name)
         self._recording = True
+        self.last_error = ""
 
         try:
             audio = await asyncio.to_thread(
@@ -373,6 +381,7 @@ class ASREngine(ABC):
 
         except Exception as exc:
             log.error("ASR: %s failed: %s", self.name, exc)
+            self.last_error = str(exc)
             await bus.emit(
                 Event.ASR_ERROR, data={"error": str(exc)}, source=self.name
             )

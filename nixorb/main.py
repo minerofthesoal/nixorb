@@ -407,7 +407,19 @@ async def _async_main(settings, app) -> None:
                 transcript = (await asr.record_and_transcribe()) or ""
 
             if not transcript:
-                log.info("No speech detected")
+                # A crash in the model is not silence. Saying "No speech
+                # detected" for both hid a real fault behind a normal one.
+                failure = getattr(asr, "last_error", "")
+                if failure:
+                    log.error("Transcription failed: %s", failure)
+                    await bus.emit(
+                        Event.LOG,
+                        data={"level": "error",
+                              "msg": f"❌ Could not transcribe: {failure}"},
+                        source="main",
+                    )
+                else:
+                    log.info("No speech detected")
                 await bus.emit(Event.ORB_IDLE, source="main")
                 return
 
