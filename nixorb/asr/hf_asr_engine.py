@@ -152,7 +152,10 @@ class HFASREngine:
         log.info("ASR: HuggingFace model unloaded")
 
     async def preload(self) -> None:
-        if self._delegate is not None or self._pipe is not None:
+        if self._delegate is not None:
+            await self._delegate.preload()
+            return
+        if self._pipe is not None:
             return
         loop = asyncio.get_running_loop()
         try:
@@ -181,8 +184,8 @@ class HFASREngine:
 
     async def unload(self) -> None:
         if self._delegate is not None:
-            delegate, self._delegate = self._delegate, None
-            await delegate.unload()
+            # Keep the stand-in across unloads — see ASREngine.unload.
+            await self._delegate.unload()
             return
         if self._pipe is not None:
             loop = asyncio.get_running_loop()

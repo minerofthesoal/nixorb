@@ -269,17 +269,6 @@ def problems() -> list[str]:
     return lines
 
 
-def _package_directory(leftovers: Sequence[str], package: str) -> str:
-    """The installed package's directory, from the files found inside it."""
-    from pathlib import Path
-
-    for path in leftovers:
-        for parent in Path(path).parents:
-            if parent.name == package:
-                return str(parent)
-    return f"<site-packages>/{package}"
-
-
 def torch_report() -> list[str]:
     """Whether torch and torchaudio import, and which CUDA build they are.
 
@@ -318,11 +307,6 @@ def torch_report() -> list[str]:
                 )
                 lines.extend(f"         {path}" for path in leftovers)
             if advice:
-                # We know where the package is, so say so rather than
-                # making the reader work out what <site-packages> means.
-                advice = advice.replace(
-                    "<site-packages>/" + name, _package_directory(leftovers, name)
-                )
                 lines.extend(f"       {line}" for line in advice.splitlines())
             continue
 

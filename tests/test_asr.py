@@ -144,8 +144,52 @@ async def test_an_unimportable_faster_whisper_is_not_called_missing(
     assert "pip install" not in message
 
 
-async def test_load_model_falls_back_to_cpu(engine):
-    """A CUDA failure must fall back to CPU rather than killing ASR."""
+async def test_cuda_is_not_attempted_without_a_cuda_device(engine, monkeypatch):
+    """A CPU-only box logged a scary int8_float16 WARNING on every load."""
+    attempts = []
+
+    class _FakeModel:
+        def __init__(self, name, device=None, compute_type=None, **kw):
+            attempts.append(device)
+
+    monkeypatch.setattr("nixorb.hf.resolve_device", lambda preference="auto": "cpu")
+    fake_module = MagicMock()
+    fake_module.WhisperModel = _FakeModel
+
+    # sys.modules, not patch("faster_whisper.WhisperModel"): the runner
+    # need not have faster-whisper installed for this to be testable.
+    with patch.dict("sys.modules", {"faster_whisper": fake_module}):
+        engine._load()
+
+    assert attempts == ["cpu"], "CUDA was attempted on a machine without it"
+
+
+async def test_cuda_is_still_tried_first_when_it_is_there(engine, monkeypatch):
+    attempts = []
+
+    class _FakeModel:
+        def __init__(self, name, device=None, compute_type=None, **kw):
+            attempts.append(device)
+
+    monkeypatch.setattr("nixorb.hf.resolve_device", lambda preference="auto": "cuda")
+    fake_module = MagicMock()
+    fake_module.WhisperModel = _FakeModel
+
+    # sys.modules, not patch("faster_whisper.WhisperModel"): the runner
+    # need not have faster-whisper installed for this to be testable.
+    with patch.dict("sys.modules", {"faster_whisper": fake_module}):
+        engine._load()
+
+    assert attempts[0] == "cuda"
+
+
+async def test_load_model_falls_back_to_cpu(engine, monkeypatch):
+    """A CUDA failure must fall back to CPU rather than killing ASR.
+
+    CUDA has to be reported present for it to be attempted at all now —
+    that is the point of the test above — so say it is, and then fail it.
+    """
+    monkeypatch.setattr("nixorb.hf.resolve_device", lambda preference="auto": "cuda")
     attempts = []
 
     class _FakeModel:

@@ -1,3 +1,45 @@
+## [2.0.10] — 2026-09-03
+
+From a full startup-to-turn log. The orb, memory, wake word, IPC and the
+ASR fallback all worked; four things around them did not.
+
+### Fixed
+
+- **The ASR fallback was re-decided on every single turn.** A regression
+  from 2.0.7: `unload()` dropped the stand-in along with its model. main
+  unloads ASR after each turn to free memory, so the next turn re-ran a
+  Nemotron load already known to fail, re-logged the entire torchaudio
+  explanation at ERROR, and built and loaded a second Whisper from
+  scratch — three times in ninety seconds of the log. The stand-in now
+  survives an unload: whether a backend can load is a property of the
+  installation, not of the turn.
+
+- **`Failed to load model from file` said nothing.** That one line is
+  llama.cpp's answer to a truncated download, a file that is not a GGUF at
+  all, and a good GGUF whose architecture the bundled llama.cpp cannot
+  build — three problems, three different fixes. `nixorb.llm.gguf_probe`
+  reads the file's own header and says which:
+
+  ```
+  The file itself is fine: a valid GGUF v3, 1.31 GB, 291 tensors,
+  architecture 'qwen3next'. So this is not a bad download — llama.cpp
+  read the header and would not build the model. Most often that means
+  the llama.cpp bundled in llama-cpp-python (0.3.x) predates the
+  architecture…
+    pip install -U --force-reinstall --no-cache-dir llama-cpp-python
+  ```
+
+  The tests build their GGUFs with llama.cpp's own `gguf` writer rather
+  than hand-rolled bytes — a reader tested only against its own encoder
+  proves nothing about the real format.
+
+- **The torchaudio purge command printed `<site-packages>`** instead of the
+  directory. Resolving it moved into `nixorb.hf`, so the log line gets the
+  real path too, not just `nixorb check`.
+
+- **faster-whisper tried CUDA on machines without it**, logging a WARNING
+  about `int8_float16` on every load that reads as a fault and is not one.
+
 ## [2.0.9] — 2026-09-02
 
 "NixOrb says transformers isn't installed, and the command it gives me

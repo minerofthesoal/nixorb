@@ -128,8 +128,28 @@ class HuggingFaceLLMBackend:
         except Exception as exc:
             raise HuggingFaceLLMError(
                 f"Could not load GGUF model '{self._model_id}'"
-                f"{' / ' + self._gguf_file if self._gguf_file else ''}: {exc}"
+                f"{' / ' + self._gguf_file if self._gguf_file else ''}: "
+                f"{self._describe_gguf_failure(exc)}"
             ) from exc
+
+    @staticmethod
+    def _describe_gguf_failure(exc: Exception) -> str:
+        """llama.cpp says "Failed to load model from file" and nothing else.
+
+        That one line covers a truncated download, a file that is not a
+        GGUF at all, and a good GGUF whose architecture the bundled
+        llama.cpp is too old to build — three problems with three
+        different fixes. The file's own header says which.
+        """
+        import re
+
+        match = re.search(r"Failed to load model from file:\s*(\S.*)", str(exc))
+        if not match:
+            return str(exc)
+
+        from nixorb.llm.gguf_probe import explain_load_failure
+
+        return explain_load_failure(match.group(1).strip(), exc)
 
     def _load_transformers(self) -> tuple[Any, Any]:
         try:
